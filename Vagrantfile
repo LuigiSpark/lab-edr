@@ -32,7 +32,7 @@ Vagrant.configure("2") do |config|
 			vb.cpus = 2
 		end 
 		
-		config.vm.provision "shell", path: "windows_shell.ps1"
+		config.vm.provision "shell", path: "windows_script.ps1"
 	end
 	
 	config.vm.define "kali" do |machine|
