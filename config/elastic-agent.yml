@@ -1,0 +1,37 @@
+outputs:
+  default:
+    type: elasticsearch
+    hosts:
+      - "http://10.10.1.1:9200"
+    username: "elastic"
+    password: "vagrant"
+
+inputs:
+  - id: system-metrics
+    type: system/metrics
+    data_stream:
+      namespace: default
+    streams:
+      - metricset: cpu
+        data_stream:
+          type: metrics
+          dataset: system.cpu
+      - metricset: memory
+        data_stream:
+          type: metrics
+          dataset: system.memory
+      - metricset: process
+        data_stream:
+          type: metrics
+          dataset: system.process
+
+  - id: windows-sysmon
+    type: logfile
+    data_stream:
+      namespace: default
+    streams:
+      - data_stream:
+          type: logs
+          dataset: windows.sysmon_operational
+        paths:
+          - C:\Windows\System32\winevt\Logs\Microsoft-Windows-Sysmon%4Operational.evtx

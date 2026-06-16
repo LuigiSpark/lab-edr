@@ -1,0 +1,8 @@
+<Sysmon schemaversion="4.90">
+  <EventFiltering>
+    <RuleGroup name="" groupRelation="or">
+      <!-- Log all network connections (Event ID 3) — no exclusions in lab context -->
+      <NetworkConnect onmatch="exclude"/>
+    </RuleGroup>
+  </EventFiltering>
+</Sysmon>

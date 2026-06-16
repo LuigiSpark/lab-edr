@@ -34,6 +34,14 @@ Vagrant.configure("2") do |config|
 			vb.memory = 6000
 			vb.cpus = 2
 		end 
+
+		machine.vm.provision "file",
+			source: "config/elastic-agent.yml",
+			destination: "C:\\elastic-agent.yml"
+
+		machine.vm.provision "file",
+			source: "config/sysmon-config.xml",
+			destination: "C:\\sysmon-config.xml"
 		
 		machine.vm.provision "shell", path: "windows_script.ps1"
 	end
