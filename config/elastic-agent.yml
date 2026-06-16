@@ -7,24 +7,6 @@ outputs:
     password: "vagrant"
 
 inputs:
-  - id: system-metrics
-    type: system/metrics
-    data_stream:
-      namespace: default
-    streams:
-      - metricset: cpu
-        data_stream:
-          type: metrics
-          dataset: system.cpu
-      - metricset: memory
-        data_stream:
-          type: metrics
-          dataset: system.memory
-      - metricset: process
-        data_stream:
-          type: metrics
-          dataset: system.process
-
   - id: windows-sysmon
     type: logfile
     data_stream:
