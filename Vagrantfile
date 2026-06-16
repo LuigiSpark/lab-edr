@@ -15,7 +15,7 @@ Vagrant.configure("2") do |config|
 			vb.cpus = 4
 		end
 		
-		machine.vm.provision "shell", path: "debian_script.ps1"
+		machine.vm.provision "shell", path: "debian_script.sh"
 	end
 
 	config.vm.define "windows" do |machine|
@@ -32,7 +32,7 @@ Vagrant.configure("2") do |config|
 			vb.cpus = 2
 		end 
 		
-		config.vm.provision "shell", path: "windows_script.ps1"
+		machine.vm.provision "shell", path: "windows_script.ps1"
 	end
 	
 	config.vm.define "kali" do |machine|
