@@ -1,3 +1,5 @@
+# Network 
+
 echo "net.ipv4.ip_forward = 1" | sudo tee -a /etc/sysctl.conf
 sudo sysctl -p
 
@@ -22,6 +24,7 @@ sudo suricata -c /etc/suricata/suricata.yaml -q 0 -D
 iptables -I FORWARD -j NFQUEUE --queue-num 0
 
 # Elastic Search
+
 echo "vm.max_map_count=300000" | sudo tee -a "/etc/sysctl.conf"
 sudo sysctl -p
 
@@ -65,7 +68,34 @@ sudo systemctl start elasticsearch.service
 
 sudo apt install curl -y
 
+echo "Waiting for Elasticsearch security to initialize..."
+for i in $(seq 1 30); do
+  status=$(curl -s -o /dev/null -w "%{http_code}" "http://10.10.1.1:9200" 2>/dev/null)
+  if [ "$status" = "401" ] || [ "$status" = "200" ]; then
+    break
+  fi
+  sleep 1
+done
+sleep 2
+
 curl -s -X POST "http://10.10.1.1:9200/_security/user/kibana_system/_password" \
   -H "Content-Type: application/json" \
   -u elastic:vagrant \
   -d '{"password": "vagrant"}'
+
+
+# Kibana
+
+sudo apt-get update && sudo apt-get install kibana -y
+sudo tee /etc/kibana/kibana.yml << 'EOF'
+server.port: 5601
+server.host: "0.0.0.0"
+elasticsearch.hosts: ["http://10.10.1.1:9200"]
+elasticsearch.username: "kibana_system"
+elasticsearch.password: "vagrant"
+EOF
+#Disable fleet, note that : xpack.fleet.enabled: false exits but is not advised.
+sudo tee -a /etc/kibana/kibana.yml << 'EOF'
+xpack.encryptedSavedObjects.encryptionKey: "lab_key_32_chars_minimum_xxxxxxxx"
+EOF
+sudo systemctl start kibana.service
