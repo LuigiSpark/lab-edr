@@ -63,6 +63,8 @@ echo "vagrant" | /usr/share/elasticsearch/bin/elasticsearch-keystore add --stdin
 
 sudo systemctl start elasticsearch.service
 
+sudo apt install curl -y
+
 curl -s -X POST "http://10.10.1.1:9200/_security/user/kibana_system/_password" \
   -H "Content-Type: application/json" \
   -u elastic:vagrant \

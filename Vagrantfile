@@ -8,6 +8,9 @@ Vagrant.configure("2") do |config|
 						    virtualbox__intnet: "windows_net"
 		machine.vm.network "private_network", ip: "10.10.10.1", 
 						    virtualbox__intnet: "kali_net"
+
+		machine.vm.network "forwarded_port", guest: 5601, host: 5601
+
 		
 		machine.vm.provider "virtualbox" do |vb|
 			vb.name = "debian-lab"
