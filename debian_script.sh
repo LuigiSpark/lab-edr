@@ -99,3 +99,27 @@ sudo tee -a /etc/kibana/kibana.yml << 'EOF'
 xpack.encryptedSavedObjects.encryptionKey: "lab_key_32_chars_minimum_xxxxxxxx"
 EOF
 sudo systemctl start kibana.service
+
+# Suricata intergration with Elastic with Fleet Beat
+
+apt-get install filebeat -y
+
+filebeat modules enable suricata
+
+tee /etc/filebeat/modules.d/suricata.yml << 'EOF'
+- module: suricata
+  eve:
+    enabled: true
+    var.paths:
+      - /var/log/suricata/eve.json
+EOF
+
+tee -a /etc/filebeat/filebeat.yml << 'EOF'
+output.elasticsearch:
+  hosts: ["http://10.10.1.1:9200"]
+  username: "elastic"
+  password: "vagrant"
+EOF
+
+systemctl enable filebeat
+systemctl start filebeat
