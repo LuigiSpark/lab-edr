@@ -121,12 +121,23 @@ curl -s -X PUT "http://localhost:5601/api/detection_engine/rules/prepackaged" \
   | jq '{rules_installed, rules_updated}'
 
 echo "Enabling all detection rules..."
-curl -s -X POST "http://localhost:5601/api/detection_engine/rules/_bulk_action" \
-  -H "kbn-xsrf: true" \
-  -H "Content-Type: application/json" \
-  -u elastic:vagrant \
-  -d '{"action": "enable", "query": ""}' \
-  | jq '{succeeded: (.attributes.summary.succeeded), failed: (.attributes.summary.failed)}'
+PAGE=1
+PER_PAGE=1000
+while true; do
+  IDS=$(curl -s "http://localhost:5601/api/detection_engine/rules/_find?page=${PAGE}&per_page=${PER_PAGE}" \
+    -u elastic:vagrant | jq -c '[.data[].id]')
+  COUNT=$(echo "$IDS" | jq 'length')
+  [ "$COUNT" -eq 0 ] && break
+  STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X POST "http://localhost:5601/api/detection_engine/rules/_bulk_action" \
+    -H "kbn-xsrf: true" \
+    -H "Content-Type: application/json" \
+    -u elastic:vagrant \
+    -d "{\"action\": \"enable\", \"ids\": ${IDS}}")
+  echo "  Page ${PAGE}: ${COUNT} rules — HTTP ${STATUS}"
+  PAGE=$((PAGE + 1))
+  [ "$COUNT" -lt "$PER_PAGE" ] && break
+done
 
 # Suricata integration with Elastic via Filebeat
 
