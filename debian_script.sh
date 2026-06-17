@@ -121,10 +121,9 @@ curl -s -X PUT "http://localhost:5601/api/detection_engine/rules/prepackaged" \
   | jq '{rules_installed, rules_updated}'
 
 echo "Enabling all detection rules..."
-PAGE=1
-PER_PAGE=100
+ITER=1
 while true; do
-  IDS=$(curl -s "http://localhost:5601/api/detection_engine/rules/_find?page=${PAGE}&per_page=${PER_PAGE}" \
+  IDS=$(curl -s "http://localhost:5601/api/detection_engine/rules/_find?per_page=100&filter=alert.attributes.enabled:false" \
     -u elastic:vagrant | jq -c '[.data[].id]')
   COUNT=$(echo "$IDS" | jq 'length')
   [ "$COUNT" -eq 0 ] && break
@@ -134,9 +133,8 @@ while true; do
     -H "Content-Type: application/json" \
     -u elastic:vagrant \
     -d "{\"action\": \"enable\", \"ids\": ${IDS}}")
-  echo "  Page ${PAGE}: ${COUNT} rules — HTTP ${STATUS}"
-  PAGE=$((PAGE + 1))
-  [ "$COUNT" -lt "$PER_PAGE" ] && break
+  echo "  Batch ${ITER}: ${COUNT} rules — HTTP ${STATUS}"
+  ITER=$((ITER + 1))
 done
 
 # Suricata integration with Elastic via Filebeat
