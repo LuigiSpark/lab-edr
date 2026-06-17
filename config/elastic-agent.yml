@@ -7,13 +7,10 @@ outputs:
     password: "vagrant"
 
 inputs:
-  - id: windows-sysmon
-    type: logfile
-    data_stream:
-      namespace: default
+  - type: winlog
     streams:
-      - data_stream:
-          type: logs
+      - name: Microsoft-Windows-Sysmon/Operational
+        data_stream:
           dataset: windows.sysmon_operational
-        paths:
-          - C:\Windows\System32\winevt\Logs\Microsoft-Windows-Sysmon%4Operational.evtx
+          type: logs
+        ignore_older: 72h
