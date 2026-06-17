@@ -100,7 +100,35 @@ xpack.encryptedSavedObjects.encryptionKey: "lab_key_32_chars_minimum_xxxxxxxx"
 EOF
 sudo systemctl start kibana.service
 
-# Suricata intergration with Elastic with Fleet Beat
+# Detection rules
+
+echo "Waiting for Kibana to be fully available..."
+for i in $(seq 1 60); do
+  level=$(curl -s "http://localhost:5601/api/status" \
+    -u elastic:vagrant 2>/dev/null | jq -r '.status.overall.level' 2>/dev/null)
+  if [ "$level" = "available" ]; then
+    echo "Kibana is available."
+    break
+  fi
+  echo "  [$i/60] level=${level:-unreachable}, retrying..."
+  sleep 3
+done
+
+echo "Installing prepackaged detection rules..."
+curl -s -X PUT "http://localhost:5601/api/detection_engine/rules/prepackaged" \
+  -H "kbn-xsrf: true" \
+  -u elastic:vagrant \
+  | jq '{rules_installed, rules_updated}'
+
+echo "Enabling all detection rules..."
+curl -s -X POST "http://localhost:5601/api/detection_engine/rules/_bulk_action" \
+  -H "kbn-xsrf: true" \
+  -H "Content-Type: application/json" \
+  -u elastic:vagrant \
+  -d '{"action": "enable", "query": ""}' \
+  | jq '{succeeded: (.attributes.summary.succeeded), failed: (.attributes.summary.failed)}'
+
+# Suricata integration with Elastic via Filebeat
 
 apt-get install filebeat -y
 
@@ -114,12 +142,13 @@ tee /etc/filebeat/modules.d/suricata.yml << 'EOF'
       - /var/log/suricata/eve.json
 EOF
 
-tee -a /etc/filebeat/filebeat.yml << 'EOF'
+tee /etc/filebeat/filebeat.yml << 'EOF'
 output.elasticsearch:
   hosts: ["http://10.10.1.1:9200"]
   username: "elastic"
   password: "vagrant"
 EOF
 
+filebeat setup --index-management
 systemctl enable filebeat
 systemctl start filebeat
