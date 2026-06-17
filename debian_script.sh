@@ -122,7 +122,7 @@ curl -s -X PUT "http://localhost:5601/api/detection_engine/rules/prepackaged" \
 
 echo "Enabling all detection rules..."
 PAGE=1
-PER_PAGE=1000
+PER_PAGE=100
 while true; do
   IDS=$(curl -s "http://localhost:5601/api/detection_engine/rules/_find?page=${PAGE}&per_page=${PER_PAGE}" \
     -u elastic:vagrant | jq -c '[.data[].id]')
