@@ -14,8 +14,8 @@ Vagrant.configure("2") do |config|
 		
 		machine.vm.provider "virtualbox" do |vb|
 			vb.name = "debian-lab"
-			vb.memory = 12000
-			vb.cpus = 4
+			vb.memory = 14000
+			vb.cpus = 5
 		end
 		
 		machine.vm.provision "shell", path: "debian_script.sh"
