@@ -19,6 +19,8 @@ systemctl disable suricata
 sed -i 's/#  mode: accept/  mode: accept/' /etc/suricata/suricata.yaml
 sed -i '/  mode: accept/a\  fail-open: yes' /etc/suricata/suricata.yaml
 
+sudo suricata-update
+
 sudo suricata -c /etc/suricata/suricata.yaml -q 0 -D
 
 iptables -I FORWARD -j NFQUEUE --queue-num 0
@@ -137,6 +139,67 @@ while true; do
   ITER=$((ITER + 1))
 done
 
+# Fleet Server
+
+apt-get install elastic-agent -y
+
+curl -s -X POST "http://localhost:5601/api/fleet/setup" \
+  -H "kbn-xsrf: true" -u elastic:vagrant > /dev/null
+
+SERVICE_TOKEN=$(curl -s -X POST "http://localhost:5601/api/fleet/service_tokens" \
+  -H "kbn-xsrf: true" -u elastic:vagrant | jq -r '.value')
+[ -z "$SERVICE_TOKEN" ] || [ "$SERVICE_TOKEN" = "null" ] && { echo "ERROR: fleet service token empty"; exit 1; }
+
+FLEET_POLICY_ID=$(curl -s -X POST "http://localhost:5601/api/fleet/agent_policies" \
+  -H "kbn-xsrf: true" -H "Content-Type: application/json" -u elastic:vagrant \
+  -d '{"name":"Fleet Server","namespace":"default","has_fleet_server":true}' \
+  | jq -r '.item.id')
+[ -z "$FLEET_POLICY_ID" ] || [ "$FLEET_POLICY_ID" = "null" ] && { echo "ERROR: fleet policy id empty"; exit 1; }
+
+# --fleet-server-es-insecure : allows HTTP (no TLS) between Fleet Server and ES
+elastic-agent install \
+  --fleet-server-es=http://10.10.1.1:9200 \
+  --fleet-server-service-token="$SERVICE_TOKEN" \
+  --fleet-server-policy="$FLEET_POLICY_ID" \
+  --fleet-server-port=8220 \
+  --fleet-server-es-insecure \
+  --non-interactive --force
+
+echo "Waiting for Fleet Server..."
+FLEET_READY=0
+for i in $(seq 1 30); do
+  status=$(curl -sk -o /dev/null -w "%{http_code}" "https://localhost:8220/api/status")
+  if [ "$status" = "200" ]; then FLEET_READY=1; break; fi
+  sleep 3
+done
+[ "$FLEET_READY" -eq 0 ] && { echo "ERROR: Fleet Server not ready after 90s"; exit 1; }
+
+# Install Elastic Defend package and capture its version for the policy
+ENDPOINT_VERSION=$(curl -s -X POST "http://localhost:5601/api/fleet/epm/packages/endpoint" \
+  -H "kbn-xsrf: true" -H "Content-Type: application/json" \
+  -u elastic:vagrant -d '{"force":true}' | jq -r '.items[0].version // .item.version')
+[ -z "$ENDPOINT_VERSION" ] || [ "$ENDPOINT_VERSION" = "null" ] && { echo "ERROR: endpoint package version empty"; exit 1; }
+
+WINDOWS_POLICY_ID=$(curl -s -X POST "http://localhost:5601/api/fleet/agent_policies" \
+  -H "kbn-xsrf: true" -H "Content-Type: application/json" -u elastic:vagrant \
+  -d '{"name":"Windows Endpoints","namespace":"default"}' \
+  | jq -r '.item.id')
+[ -z "$WINDOWS_POLICY_ID" ] || [ "$WINDOWS_POLICY_ID" = "null" ] && { echo "ERROR: windows policy id empty"; exit 1; }
+
+curl -s -X POST "http://localhost:5601/api/fleet/package_policies" \
+  -H "kbn-xsrf: true" -H "Content-Type: application/json" -u elastic:vagrant \
+  -d "{
+    \"name\": \"endpoint-lab\",
+    \"policy_id\": \"$WINDOWS_POLICY_ID\",
+    \"package\": {\"name\": \"endpoint\", \"version\": \"$ENDPOINT_VERSION\"},
+    \"inputs\": [{\"type\": \"endpoint\", \"enabled\": true}]
+  }" > /dev/null
+
+# Create enrollment token for Windows policy (Windows will fetch it by policy_id)
+curl -s -X POST "http://localhost:5601/api/fleet/enrollment_api_keys" \
+  -H "kbn-xsrf: true" -H "Content-Type: application/json" -u elastic:vagrant \
+  -d "{\"policy_id\": \"$WINDOWS_POLICY_ID\"}" > /dev/null
+
 # Suricata integration with Elastic via Filebeat
 
 apt-get install filebeat -y
@@ -152,6 +215,10 @@ tee /etc/filebeat/modules.d/suricata.yml << 'EOF'
 EOF
 
 tee /etc/filebeat/filebeat.yml << 'EOF'
+filebeat.config.modules:
+  path: ${path.config}/modules.d/*.yml
+  reload.enabled: false
+
 output.elasticsearch:
   hosts: ["http://10.10.1.1:9200"]
   username: "elastic"

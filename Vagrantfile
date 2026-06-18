@@ -36,10 +36,6 @@ Vagrant.configure("2") do |config|
 		end 
 
 		machine.vm.provision "file",
-			source: "config/elastic-agent.yml",
-			destination: "C:\\elastic-agent.yml"
-
-		machine.vm.provision "file",
 			source: "config/sysmon-config.xml",
 			destination: "C:\\sysmon-config.xml"
 		
