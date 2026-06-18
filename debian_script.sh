@@ -161,11 +161,20 @@ for i in $(seq 1 30); do
 done
 [ "$FLEET_READY" -eq 0 ] && { echo "ERROR: Fleet Server not ready after 90s"; exit 1; }
 
-# Installe le module Elastic Defend et récupère sa version exacte
-ENDPOINT_VERSION=$(curl -s -X POST "http://localhost:5601/api/fleet/epm/packages/endpoint" \
-  -H "kbn-xsrf: true" -H "Content-Type: application/json" \
-  -u elastic:vagrant -d '{"force":true}' | jq -r '.items[0].version // .item.version')
+# Attend que le module endpoint soit disponible dans le catalogue Fleet (race condition au démarrage)
+ENDPOINT_VERSION=""
+for i in $(seq 1 12); do
+  ENDPOINT_VERSION=$(curl -s "http://localhost:5601/api/fleet/epm/packages/endpoint" \
+    -u elastic:vagrant | jq -r '.item.version // empty')
+  [ -n "$ENDPOINT_VERSION" ] && break
+  sleep 5
+done
 [ -z "$ENDPOINT_VERSION" ] || [ "$ENDPOINT_VERSION" = "null" ] && { echo "ERROR: endpoint package version empty"; exit 1; }
+
+# Installe la version récupérée (idempotent — sans erreur si déjà installé)
+curl -s -X POST "http://localhost:5601/api/fleet/epm/packages/endpoint/$ENDPOINT_VERSION" \
+  -H "kbn-xsrf: true" -H "Content-Type: application/json" \
+  -u elastic:vagrant -d '{"force":true}' > /dev/null
 
 # Politique pour les agents Windows
 WINDOWS_POLICY_ID=$(curl -s -X POST "http://localhost:5601/api/fleet/agent_policies" \
