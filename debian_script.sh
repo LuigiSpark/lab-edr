@@ -224,3 +224,38 @@ EOF
 filebeat setup --index-management
 systemctl enable filebeat
 systemctl start filebeat
+
+# ── Packetbeat ────────────────────────────────────────────────────────────
+# Capture et analyse les protocoles réseau (DNS, HTTP, TLS, ICMP)
+
+apt-get install libpcap0.8 packetbeat -y
+
+tee /etc/packetbeat/packetbeat.yml << 'EOF'
+# Capture sur toutes les interfaces (Windows + Kali + NAT)
+packetbeat.interfaces.type: af_packet
+packetbeat.interfaces.device: any
+
+packetbeat.protocols:
+- type: icmp
+  enabled: true
+- type: dns
+  ports: [53]
+- type: http
+  ports: [80, 8080]
+- type: tls
+  ports: [443, 8443]
+
+setup.kibana:
+  host: "localhost:5601"
+  username: "elastic"
+  password: "vagrant"
+
+output.elasticsearch:
+  hosts: ["http://10.10.1.1:9200"]
+  username: "elastic"
+  password: "vagrant"
+EOF
+
+packetbeat setup           # charge les dashboards Kibana et les index templates
+systemctl enable packetbeat
+systemctl start packetbeat
