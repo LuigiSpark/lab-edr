@@ -8,10 +8,20 @@ This lab is not a prod environment and should not be used as such. Most of the s
 
 3 VMs are created named :
 - kali : to simulate an attacker.
-- debian : an NGFW with Suricata and Elastic Security that intercepts traffic between kali and windows.
+- debian : an NGFW that intercepts all traffic between kali and windows.
 - windows : to simulate a target.
 
 Note that kali machine is a debian machine with a few pentesting tools installed.
+
+![Architecture](./architecture.png)
+
+The debian VM is the core of the lab. It runs :
+- **Suricata** — network IDS in NFQUEUE mode. Every packet transiting between kali and windows goes through it. Alerts are written to `/var/log/suricata/eve.json`.
+- **Elasticsearch** — stores all events (Suricata alerts, Packetbeat flows, Elastic Agent telemetry).
+- **Kibana** — web UI to visualize events and manage detection rules. Exposed on the host at `localhost:5601` via port forward.
+- **Fleet Server** — manages Elastic Agents remotely (enrollment, policy updates). Windows connects to it on port `8220`.
+- **Filebeat** — ships Suricata alerts (`eve.json`) to Elasticsearch.
+- **Packetbeat** — captures and parses network protocols (DNS, HTTP, TLS, ICMP) directly on the debian interfaces.
 
 ## Pre-requisites
 
