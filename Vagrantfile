@@ -62,12 +62,7 @@ Vagrant.configure("2") do |config|
 			vb.memory = 4096
 			vb.cpus = 2
 		end 
-		
-		machine.vm.provision "shell", privileged: true, inline: <<-SHELL
-		   ip route add 10.10.1.0/24 via 10.10.10.1 || true
-			
-			echo "ip route add 10.10.1.0/24 via 10.10.10.1" | tee -a /etc/rc.local 
-			chmod +x /etc/rc.local
-		SHELL
+
+		machine.vm.provision "shell", path: "kali_script.sh"
 	end
 end		
