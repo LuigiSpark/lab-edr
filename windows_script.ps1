@@ -64,6 +64,15 @@ s.close()
 Remove-Item C:\Users\vagrant\lab\pyembed -Recurse -Force -ErrorAction SilentlyContinue
 Expand-Archive C:\Users\vagrant\lab\py.zip -DestinationPath C:\Users\vagrant\lab\pyembed -Force
 
+# ── Dossiers collect_alerts ───────────────────────────────────────────────
+# Crée les dossiers utilisés par collect_alerts.py
+# submissions : les autres stagiaires y déposent leurs payloads
+# results     : le script y écrit un rapport JSON par payload exécuté
+
+New-Item -ItemType Directory -Force -Path C:\lab\submissions | Out-Null
+New-Item -ItemType Directory -Force -Path C:\lab\results     | Out-Null
+
+
 # ── Sysmon ────────────────────────────────────────────────────────────────
 # Enregistre les événements système détaillés dans le journal Windows
 
@@ -121,3 +130,9 @@ if ([string]::IsNullOrWhiteSpace($token)) { throw "Enrollment token not found fo
   --url=https://10.10.1.1:8220 `
   --enrollment-token=$token `
   --insecure --non-interactive
+
+# Route all internet traffic through Debian so Suricata can inspect it.
+# Done last — all provisioning downloads already used the VirtualBox NAT adapter.
+cmd /c "route delete 0.0.0.0 mask 0.0.0.0"
+cmd /c "route add 0.0.0.0 mask 0.0.0.0 10.10.1.1 -p"
+Write-Host "Default route set to Debian (10.10.1.1) — Suricata will see all traffic"

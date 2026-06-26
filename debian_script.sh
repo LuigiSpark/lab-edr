@@ -1,10 +1,13 @@
-# ── Réseau ────────────────────────────────────────────────────────────────
-# Active le routage IP et autorise le trafic entre les deux interfaces réseau
-
+# Enable IP routing between the two internal networks (Windows <-> Kali).
 echo "net.ipv4.ip_forward = 1" | tee -a /etc/sysctl.conf
 sysctl -p
 iptables -A FORWARD -i eth1 -o eth2 -j ACCEPT
 iptables -A FORWARD -i eth2 -o eth1 -j ACCEPT
+
+# NAT Windows traffic to internet via Debian.
+# Without this, packets from 10.10.1.10 have no return address on the internet.
+# The FORWARD chain already allows all traffic — only MASQUERADE is missing.
+iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
 
 # ── Suricata ──────────────────────────────────────────────────────────────
 # IDS réseau : inspecte chaque paquet qui passe par la VM (mode NFQUEUE)
@@ -14,16 +17,23 @@ echo "deb http://deb.debian.org/debian bookworm-backports main" > \
 apt-get update
 apt-get install -t bookworm-backports suricata suricata-update jq -y
 
-systemctl stop suricata
+systemctl stop suricata 2>/dev/null || true
 systemctl disable suricata
 
 # Mode "accept" : Suricata inspecte sans bloquer — "fail-open" laisse passer si crash
 sed -i 's/#  mode: accept/  mode: accept/' /etc/suricata/suricata.yaml
 sed -i '/  mode: accept/a\  fail-open: yes' /etc/suricata/suricata.yaml
 
-suricata-update                                       # télécharge les règles de détection
-suricata -c /etc/suricata/suricata.yaml -q 0 -D       # démarre en arrière-plan
-iptables -I FORWARD -j NFQUEUE --queue-num 0          # redirige le trafic vers Suricata
+suricata-update enable-source et/open   # enable Emerging Threats ruleset
+suricata-update                         # download detection rules
+
+# Start Suricata in background (NFQUEUE mode: inspect without blocking).
+# Snapshot is taken after this — no need for systemd persistence.
+suricata -c /etc/suricata/suricata.yaml -q 0 -D
+
+# Send all forwarded packets to Suricata (queue 0).
+# --queue-bypass: if Suricata crashes, packets pass through instead of being dropped.
+iptables -I FORWARD -j NFQUEUE --queue-num 0 --queue-bypass
 
 # ── Elasticsearch ─────────────────────────────────────────────────────────
 # Base de données qui stocke tous les événements du lab
@@ -268,3 +278,171 @@ EOF
 packetbeat setup           # charge les dashboards Kibana et les index templates
 systemctl enable packetbeat
 systemctl start packetbeat
+
+# ── minGW-w64 ────────────────────────────────────────────────────────────
+# Pour compiler les binaires Windows depuis Linux (cross-compilation)
+
+sudo apt-get install mingw-w64 -y
+
+# ── Elastic trial (Enterprise — 30 jours) ────────────────────────────────
+# Active ML jobs, anomaly detection, entity analytics
+# Idempotent : si déjà activé, Elasticsearch retourne trial_already_activated
+echo "[trial] Attente Elasticsearch..."
+for i in $(seq 1 30); do
+  STATUS=$(curl -s -u elastic:vagrant http://10.10.1.1:9200/_cluster/health 2>/dev/null | grep -o '"status":"[^"]*"' | head -1)
+  if echo "$STATUS" | grep -qE "green|yellow"; then
+    break
+  fi
+  sleep 10
+done
+
+RESULT=$(curl -s -X POST "http://elastic:vagrant@10.10.1.1:9200/_license/start_trial?acknowledge=true")
+echo "[trial] $RESULT"
+
+# ── ML Jobs réseau (Elastic Enterprise trial) ─────────────────────────────
+# 3 jobs anomaly detection sur données Packetbeat TLS
+# Idempotents : si déjà créés, ES retourne resource_already_exists_exception
+
+echo "[ml] Attente Elasticsearch ready..."
+for i in $(seq 1 30); do
+  STATUS=$(curl -s --max-time 5 -u elastic:vagrant http://10.10.1.1:9200/_cluster/health 2>/dev/null | grep -o '"status":"[^"]*"' | head -1)
+  if echo "$STATUS" | grep -qE "green|yellow"; then
+    break
+  fi
+  sleep 10
+done
+
+# Job 1 : destination inhabituelle (rare IP)
+curl -s -u elastic:vagrant -X PUT http://10.10.1.1:9200/_ml/anomaly_detectors/lab-tls-rare-destination \
+  -H Content-Type:application/json \
+  -d '{"description":"Connexion TLS vers destination inhabituelle","analysis_config":{"bucket_span":"1h","detectors":[{"function":"rare","by_field_name":"destination.ip","over_field_name":"source.ip"}],"influencers":["source.ip","destination.ip"]},"data_description":{"time_field":"@timestamp"},"model_plot_config":{"enabled":false}}' \
+  -o /dev/null
+
+# Job 2 : beacon pattern (high count)
+curl -s -u elastic:vagrant -X PUT http://10.10.1.1:9200/_ml/anomaly_detectors/lab-tls-beacon \
+  -H Content-Type:application/json \
+  -d '{"description":"Beacon pattern - connexions TLS trop frequentes vers meme destination","analysis_config":{"bucket_span":"5m","detectors":[{"function":"high_count","over_field_name":"destination.ip"}],"influencers":["source.ip","destination.ip"]},"data_description":{"time_field":"@timestamp"}}' \
+  -o /dev/null
+
+# Job 3 : JA3 inhabituel
+curl -s -u elastic:vagrant -X PUT http://10.10.1.1:9200/_ml/anomaly_detectors/lab-tls-rare-ja3 \
+  -H Content-Type:application/json \
+  -d '{"description":"Fingerprint JA3 inhabituel - client TLS non-navigateur","analysis_config":{"bucket_span":"1h","detectors":[{"function":"rare","by_field_name":"tls.client.ja3"}],"influencers":["source.ip","tls.client.ja3"]},"data_description":{"time_field":"@timestamp"}}' \
+  -o /dev/null
+
+# Datafeeds sur Packetbeat TLS
+for JOB in lab-tls-rare-destination lab-tls-beacon lab-tls-rare-ja3; do
+  curl -s -u elastic:vagrant -X PUT http://10.10.1.1:9200/_ml/datafeeds/datafeed-${JOB} \
+    -H Content-Type:application/json \
+    -d "{\"job_id\":\"${JOB}\",\"indices\":[\".ds-packetbeat-9.4.2-*\"],\"query\":{\"term\":{\"network.protocol\":\"tls\"}},\"frequency\":\"1m\",\"scroll_size\":500}" \
+    -o /dev/null
+  curl -s -u elastic:vagrant -X POST http://10.10.1.1:9200/_ml/anomaly_detectors/${JOB}/_open -o /dev/null
+  curl -s -u elastic:vagrant -X POST http://10.10.1.1:9200/_ml/datafeeds/datafeed-${JOB}/_start \
+    -H Content-Type:application/json \
+    -d '{"start":"now-30d"}' \
+    -o /dev/null
+  echo "[ml] $JOB started"
+done
+
+# ── Zeek 8.0 ─────────────────────────────────────────────────────────────────
+# Analyseur réseau passif — produit ssl.log (ja3, ja3s, validation_status, ja4)
+# Installé depuis OBS Debian 12 (openSUSE Build Service)
+# Logs dans /opt/zeek/spool/zeek/ → symlink /opt/zeek/logs/current
+
+echo "[zeek] Ajout repo OBS Debian 12..."
+echo 'deb http://download.opensuse.org/repositories/security:/zeek/Debian_12/ /' \
+  | tee /etc/apt/sources.list.d/zeek.list
+curl -fsSL https://download.opensuse.org/repositories/security:/zeek/Debian_12/Release.key \
+  | gpg --dearmor | tee /etc/apt/trusted.gpg.d/zeek.gpg > /dev/null
+apt-get update -q
+apt-get install -y zeek-8.0
+
+echo "[zeek] Configuration interface eth2 (attacker network)..."
+sed -i 's/^interface=.*/interface=eth2/' /opt/zeek/etc/node.cfg
+
+echo "[zeek] Activation JSON logs, checksum fix, validation_status, JA3/JA4..."
+tee -a /opt/zeek/share/zeek/site/local.zeek << 'ZEEKEOF'
+
+# JSON output pour Filebeat
+@load policy/tuning/json-logs.zeek
+# Ignorer les checksums NIC offloading (VMs VirtualBox)
+redef ignore_checksums = T;
+# Certificate validation → champ zeek.ssl.validation.status
+@load policy/protocols/ssl/validate-certs.zeek
+# Charger les packages installés (JA3, JA4)
+@load packages
+ZEEKEOF
+
+echo "[zeek] Installation packages JA3 + JA4..."
+/opt/zeek/bin/zkg install zeek/salesforce/ja3 --force
+/opt/zeek/bin/zkg install zeek/foxio/ja4 --force
+
+echo "[zeek] Déploiement..."
+/opt/zeek/bin/zeekctl deploy
+
+echo "[zeek] Symlink logs/current → spool/zeek..."
+ln -sfn /opt/zeek/spool/zeek /opt/zeek/logs/current
+
+echo "[zeek] Status :"
+/opt/zeek/bin/zeekctl status
+
+# ── Filebeat module Zeek → Elasticsearch ─────────────────────────────────────
+echo "[filebeat-zeek] Activation module zeek..."
+filebeat modules enable zeek
+
+tee /etc/filebeat/modules.d/zeek.yml << 'FBEOF'
+- module: zeek
+  connection:
+    enabled: true
+    var.paths: ["/opt/zeek/logs/current/conn.log"]
+  dns:
+    enabled: true
+    var.paths: ["/opt/zeek/logs/current/dns.log"]
+  http:
+    enabled: true
+    var.paths: ["/opt/zeek/logs/current/http.log"]
+  ssl:
+    enabled: true
+    var.paths: ["/opt/zeek/logs/current/ssl.log"]
+  x509:
+    enabled: true
+    var.paths: ["/opt/zeek/logs/current/x509.log"]
+  files:
+    enabled: true
+    var.paths: ["/opt/zeek/logs/current/files.log"]
+  weird:
+    enabled: true
+    var.paths: ["/opt/zeek/logs/current/weird.log"]
+FBEOF
+
+systemctl restart filebeat
+echo "[filebeat-zeek] Module zeek activé et Filebeat redémarré"
+
+# ── Règles Kibana Zeek ─────────────────────────────────────────────────────────
+# 3 règles KQL dans Elastic Security : cert auto-signé, SNI absent, JA3 curl
+# Attendre Kibana disponible
+echo "[kibana-rules] Attente Kibana..."
+for i in $(seq 1 30); do
+  STATUS=$(curl -s -u elastic:vagrant http://10.10.1.1:5601/api/status 2>/dev/null | grep -o '"overall"' | head -1)
+  if [ -n "$STATUS" ]; then break; fi
+  sleep 10
+done
+
+curl -s -u elastic:vagrant \
+  -H "kbn-xsrf: true" -H "Content-Type: application/json" \
+  "http://10.10.1.1:5601/api/detection_engine/rules" -X POST \
+  -d '{"name":"[Zeek] Certificat auto-signé détecté","description":"Zeek détecte validation_status=self signed certificate — indicateur de C2 avec cert généré localement.","rule_id":"zeek-self-signed-cert","type":"query","language":"kuery","query":"event.dataset: \"zeek.ssl\" and zeek.ssl.validation.status: \"self signed certificate\"","index":["filebeat-*"],"severity":"high","risk_score":73,"enabled":true,"interval":"1m","from":"now-5m","max_signals":100,"tags":["Zeek","TLS","C2","Evasion"]}' \
+  -o /dev/null && echo "[kibana-rules] Règle 1 créée"
+
+curl -s -u elastic:vagrant \
+  -H "kbn-xsrf: true" -H "Content-Type: application/json" \
+  "http://10.10.1.1:5601/api/detection_engine/rules" -X POST \
+  -d '{"name":"[Zeek] TLS sans SNI sur port 443","description":"Connexion HTTPS sans Server Name Indication — malware se connecte par IP directe.","rule_id":"zeek-no-sni","type":"query","language":"kuery","query":"event.dataset: \"zeek.ssl\" and not tls.server_name: * and destination.port: 443","index":["filebeat-*"],"severity":"medium","risk_score":47,"enabled":true,"interval":"1m","from":"now-5m","max_signals":100,"tags":["Zeek","TLS","SNI","Evasion"]}' \
+  -o /dev/null && echo "[kibana-rules] Règle 2 créée"
+
+curl -s -u elastic:vagrant \
+  -H "kbn-xsrf: true" -H "Content-Type: application/json" \
+  "http://10.10.1.1:5601/api/detection_engine/rules" -X POST \
+  -d '{"name":"[Zeek] JA3 curl/outil détecté sur port 443","description":"JA3 hash correspondant à curl OpenSSL standard — pas un navigateur web.","rule_id":"zeek-ja3-curl","type":"query","language":"kuery","query":"event.dataset: \"zeek.ssl\" and tls.client.ja3: (\"78f0dc5ac5b19daf131a133cfdee9691\" or \"5723c02ba862f61e9215c3e669c1c0d8\")","index":["filebeat-*"],"severity":"medium","risk_score":47,"enabled":true,"interval":"1m","from":"now-5m","max_signals":100,"tags":["Zeek","JA3","Fingerprint","Evasion"]}' \
+  -o /dev/null && echo "[kibana-rules] Règle 3 créée"
+

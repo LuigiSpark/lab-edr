@@ -38,6 +38,13 @@ Vagrant.configure("2") do |config|
 		machine.vm.provision "file",
 			source: "config/sysmon-config.xml",
 			destination: "C:\\sysmon-config.xml"
+
+		machine.vm.provision "shell",
+			inline: "New-Item -ItemType Directory -Force -Path C:\\lab | Out-Null"
+
+		machine.vm.provision "file",
+			source: "integration/collect_alerts.py",
+			destination: "C:\\lab\\collect_alerts.py"
 		
 		machine.vm.provision "shell", path: "windows_script.ps1"
 	end
