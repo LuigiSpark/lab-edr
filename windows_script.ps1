@@ -136,3 +136,13 @@ if ([string]::IsNullOrWhiteSpace($token)) { throw "Enrollment token not found fo
 cmd /c "route delete 0.0.0.0 mask 0.0.0.0"
 cmd /c "route add 0.0.0.0 mask 0.0.0.0 10.10.1.1 -p"
 Write-Host "Default route set to Debian (10.10.1.1) -- Suricata will see all traffic"
+
+# Start the alert collector in the background.
+# Must run last -- needs the lab folders and Python to be ready.
+# -u disables output buffering so the log file updates in real time.
+Start-Process -FilePath C:\Users\vagrant\lab\pyembed\python.exe `
+  -ArgumentList '-u', 'C:\lab\collect_alerts.py' `
+  -WindowStyle Hidden `
+  -RedirectStandardOutput C:\lab\collect_alerts.log `
+  -RedirectStandardError  C:\lab\collect_alerts_err.log
+Write-Host "collect_alerts.py started in background"

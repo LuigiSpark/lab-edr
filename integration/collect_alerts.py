@@ -268,6 +268,9 @@ def execute_payload(filepath: Path) -> subprocess.Popen:
         cmd = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", str(filepath)]
     elif ext in (".bat", ".cmd"):
         cmd = ["cmd.exe", "/c", str(filepath)]
+    elif ext == ".py":
+        # Run Python scripts with the embedded interpreter bundled in the lab.
+        cmd = [r"C:\Users\vagrant\lab\pyembed\python.exe", str(filepath)]
     elif ext in (".doc", ".docx", ".xls", ".xlsx", ".pdf", ".js", ".vbs", ".hta"):
         # Non-executable file types: open with the default Windows application
         # (requires Office for .doc, browser for .html, etc.)
