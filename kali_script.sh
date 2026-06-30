@@ -2,6 +2,12 @@
 # Route traffic to Windows network through Debian (10.10.10.1).
 ip route add 10.10.1.0/24 via 10.10.10.1 || true
 
+# apt-get update needs this directory to exist — it may be missing on a fresh Vagrant box.
+mkdir -p /var/lib/apt/lists/partial
+
+# Refresh package list before installing anything.
+apt-get update -y
+
 # gnupg is required by the Metasploit install script to verify package signatures.
 apt-get install -y gnupg curl
 

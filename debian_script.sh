@@ -10,7 +10,8 @@ iptables -A FORWARD -i eth2 -o eth1 -j ACCEPT
 iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
 
 # ── Suricata ──────────────────────────────────────────────────────────────
-# IDS réseau : inspecte chaque paquet qui passe par la VM (mode NFQUEUE)
+# Network IDS: inspects every packet that passes through this VM (NFQUEUE mode).
+# Acts as a middleman between Kali and Windows — sees all traffic.
 
 echo "deb http://deb.debian.org/debian bookworm-backports main" > \
     /etc/apt/sources.list.d/backports.list
@@ -20,7 +21,8 @@ apt-get install -t bookworm-backports suricata suricata-update jq -y
 systemctl stop suricata 2>/dev/null || true
 systemctl disable suricata
 
-# Mode "accept" : Suricata inspecte sans bloquer — "fail-open" laisse passer si crash
+# Set Suricata to "accept" mode: it inspects packets but does NOT drop them.
+# fail-open: if Suricata crashes, traffic keeps flowing instead of being blocked.
 sed -i 's/#  mode: accept/  mode: accept/' /etc/suricata/suricata.yaml
 sed -i '/  mode: accept/a\  fail-open: yes' /etc/suricata/suricata.yaml
 
@@ -36,7 +38,8 @@ suricata -c /etc/suricata/suricata.yaml -q 0 -D
 iptables -I FORWARD -j NFQUEUE --queue-num 0 --queue-bypass
 
 # ── Elasticsearch ─────────────────────────────────────────────────────────
-# Base de données qui stocke tous les événements du lab
+# The database that stores everything: Zeek logs, Suricata alerts, Windows events.
+# Kibana reads from Elasticsearch to display dashboards and detection alerts.
 
 echo "vm.max_map_count=300000" | tee -a /etc/sysctl.conf
 sysctl -p
@@ -58,8 +61,8 @@ network.host: 10.10.1.1
 http.port: 9200
 discovery.type: single-node
 xpack.security.enabled: true
-xpack.security.enrollment.enabled: false  # désactive l'assistant de configuration
-xpack.security.http.ssl.enabled: false    # HTTP simple — réseau de lab isolé
+xpack.security.enrollment.enabled: false  # disable the interactive setup wizard
+xpack.security.http.ssl.enabled: false    # plain HTTP — lab network is isolated, no need for TLS
 xpack.security.transport.ssl.enabled: false
 EOF
 
@@ -82,7 +85,7 @@ curl -s -X POST "http://10.10.1.1:9200/_security/user/kibana_system/_password" \
   -d '{"password": "vagrant"}'
 
 # ── Kibana ────────────────────────────────────────────────────────────────
-# Interface web pour visualiser les événements et gérer les alertes
+# The web UI on port 5601. Used to view events, write detection rules, and see alerts.
 
 apt-get update && apt-get install kibana -y
 
@@ -129,7 +132,8 @@ while true; do
 done
 
 # ── Fleet Server ──────────────────────────────────────────────────────────
-# Fleet gère les agents à distance : déploiement, configuration, mises à jour
+# Fleet manages remote agents (Windows): it pushes configs and updates to them.
+# The Windows VM enrolls here to get its monitoring policy.
 
 # Le paquet apt n'inclut pas Fleet Server — le tarball contient la version complète
 curl -sL "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-9.4.2-linux-x86_64.tar.gz" \
@@ -216,7 +220,8 @@ curl -s -X PUT "http://localhost:5601/api/fleet/outputs/fleet-default-output" \
   > /dev/null
 
 # ── Filebeat / Suricata ───────────────────────────────────────────────────
-# Envoie les alertes réseau Suricata vers Elasticsearch
+# Filebeat reads Suricata's EVE JSON log and ships the alerts to Elasticsearch.
+# Without this, Suricata alerts stay in a local file and Kibana never sees them.
 
 apt-get install filebeat -y
 filebeat modules enable suricata
@@ -245,7 +250,8 @@ systemctl enable filebeat
 systemctl start filebeat
 
 # ── Packetbeat ────────────────────────────────────────────────────────────
-# Capture et analyse les protocoles réseau (DNS, HTTP, TLS, ICMP)
+# Captures and decodes network protocols (DNS, HTTP, TLS, ICMP) directly from the wire.
+# Feeds the Elastic ML jobs for behavioral anomaly detection (beaconing, rare destinations).
 
 apt-get install libpcap0.8 packetbeat -y
 
@@ -280,13 +286,14 @@ systemctl enable packetbeat
 systemctl start packetbeat
 
 # ── minGW-w64 ────────────────────────────────────────────────────────────
-# Pour compiler les binaires Windows depuis Linux (cross-compilation)
+# Cross-compiler: lets you build Windows .exe files from Linux.
+# Used to compile C payloads for the Windows VM without needing a Windows build environment.
 
 sudo apt-get install mingw-w64 -y
 
-# ── Elastic trial (Enterprise — 30 jours) ────────────────────────────────
-# Active ML jobs, anomaly detection, entity analytics
-# Idempotent : si déjà activé, Elasticsearch retourne trial_already_activated
+# ── Elastic trial (Enterprise — 30 days) ────────────────────────────────
+# Unlocks ML anomaly detection jobs, entity analytics, and advanced security features.
+# Safe to run multiple times: if already activated, Elasticsearch returns trial_already_activated.
 echo "[trial] Attente Elasticsearch..."
 for i in $(seq 1 30); do
   STATUS=$(curl -s -u elastic:vagrant http://10.10.1.1:9200/_cluster/health 2>/dev/null | grep -o '"status":"[^"]*"' | head -1)
@@ -299,9 +306,10 @@ done
 RESULT=$(curl -s -X POST "http://elastic:vagrant@10.10.1.1:9200/_license/start_trial?acknowledge=true")
 echo "[trial] $RESULT"
 
-# ── ML Jobs réseau (Elastic Enterprise trial) ─────────────────────────────
-# 3 jobs anomaly detection sur données Packetbeat TLS
-# Idempotents : si déjà créés, ES retourne resource_already_exists_exception
+# ── ML Jobs — network anomaly detection ──────────────────────────────────
+# 3 unsupervised ML jobs that learn what "normal" TLS traffic looks like,
+# then alert when something unusual appears (new IP, unusual fingerprint, beaconing pattern).
+# Safe to run multiple times: if already created, Elasticsearch returns resource_already_exists_exception.
 
 echo "[ml] Attente Elasticsearch ready..."
 for i in $(seq 1 30); do
@@ -312,19 +320,20 @@ for i in $(seq 1 30); do
   sleep 10
 done
 
-# Job 1 : destination inhabituelle (rare IP)
+# Job 1: alert when Windows connects to an IP it has never connected to before.
 curl -s -u elastic:vagrant -X PUT http://10.10.1.1:9200/_ml/anomaly_detectors/lab-tls-rare-destination \
   -H Content-Type:application/json \
   -d '{"description":"Connexion TLS vers destination inhabituelle","analysis_config":{"bucket_span":"1h","detectors":[{"function":"rare","by_field_name":"destination.ip","over_field_name":"source.ip"}],"influencers":["source.ip","destination.ip"]},"data_description":{"time_field":"@timestamp"},"model_plot_config":{"enabled":false}}' \
   -o /dev/null
 
-# Job 2 : beacon pattern (high count)
+# Job 2: alert when TLS connections to the same IP are unusually frequent (C2 beaconing pattern).
 curl -s -u elastic:vagrant -X PUT http://10.10.1.1:9200/_ml/anomaly_detectors/lab-tls-beacon \
   -H Content-Type:application/json \
   -d '{"description":"Beacon pattern - connexions TLS trop frequentes vers meme destination","analysis_config":{"bucket_span":"5m","detectors":[{"function":"high_count","over_field_name":"destination.ip"}],"influencers":["source.ip","destination.ip"]},"data_description":{"time_field":"@timestamp"}}' \
   -o /dev/null
 
-# Job 3 : JA3 inhabituel
+# Job 3: alert when a TLS fingerprint (JA3) appears that has never been seen before.
+# A new tool making TLS connections will have a different fingerprint than a browser.
 curl -s -u elastic:vagrant -X PUT http://10.10.1.1:9200/_ml/anomaly_detectors/lab-tls-rare-ja3 \
   -H Content-Type:application/json \
   -d '{"description":"Fingerprint JA3 inhabituel - client TLS non-navigateur","analysis_config":{"bucket_span":"1h","detectors":[{"function":"rare","by_field_name":"tls.client.ja3"}],"influencers":["source.ip","tls.client.ja3"]},"data_description":{"time_field":"@timestamp"}}' \
@@ -418,31 +427,8 @@ FBEOF
 systemctl restart filebeat
 echo "[filebeat-zeek] Module zeek activé et Filebeat redémarré"
 
-# ── Règles Kibana Zeek ─────────────────────────────────────────────────────────
-# 3 règles KQL dans Elastic Security : cert auto-signé, SNI absent, JA3 curl
-# Attendre Kibana disponible
-echo "[kibana-rules] Attente Kibana..."
-for i in $(seq 1 30); do
-  STATUS=$(curl -s -u elastic:vagrant http://10.10.1.1:5601/api/status 2>/dev/null | grep -o '"overall"' | head -1)
-  if [ -n "$STATUS" ]; then break; fi
-  sleep 10
-done
-
-curl -s -u elastic:vagrant \
-  -H "kbn-xsrf: true" -H "Content-Type: application/json" \
-  "http://10.10.1.1:5601/api/detection_engine/rules" -X POST \
-  -d '{"name":"[Zeek] Certificat auto-signé détecté","description":"Zeek détecte validation_status=self signed certificate — indicateur de C2 avec cert généré localement.","rule_id":"zeek-self-signed-cert","type":"query","language":"kuery","query":"event.dataset: \"zeek.ssl\" and zeek.ssl.validation.status: \"self signed certificate\"","index":["filebeat-*"],"severity":"high","risk_score":73,"enabled":true,"interval":"1m","from":"now-5m","max_signals":100,"tags":["Zeek","TLS","C2","Evasion"]}' \
-  -o /dev/null && echo "[kibana-rules] Règle 1 créée"
-
-curl -s -u elastic:vagrant \
-  -H "kbn-xsrf: true" -H "Content-Type: application/json" \
-  "http://10.10.1.1:5601/api/detection_engine/rules" -X POST \
-  -d '{"name":"[Zeek] TLS sans SNI sur port 443","description":"Connexion HTTPS sans Server Name Indication — malware se connecte par IP directe.","rule_id":"zeek-no-sni","type":"query","language":"kuery","query":"event.dataset: \"zeek.ssl\" and not tls.server_name: * and destination.port: 443","index":["filebeat-*"],"severity":"medium","risk_score":47,"enabled":true,"interval":"1m","from":"now-5m","max_signals":100,"tags":["Zeek","TLS","SNI","Evasion"]}' \
-  -o /dev/null && echo "[kibana-rules] Règle 2 créée"
-
-curl -s -u elastic:vagrant \
-  -H "kbn-xsrf: true" -H "Content-Type: application/json" \
-  "http://10.10.1.1:5601/api/detection_engine/rules" -X POST \
-  -d '{"name":"[Zeek] JA3 curl/outil détecté sur port 443","description":"JA3 hash correspondant à curl OpenSSL standard — pas un navigateur web.","rule_id":"zeek-ja3-curl","type":"query","language":"kuery","query":"event.dataset: \"zeek.ssl\" and tls.client.ja3: (\"78f0dc5ac5b19daf131a133cfdee9691\" or \"5723c02ba862f61e9215c3e669c1c0d8\")","index":["filebeat-*"],"severity":"medium","risk_score":47,"enabled":true,"interval":"1m","from":"now-5m","max_signals":100,"tags":["Zeek","JA3","Fingerprint","Evasion"]}' \
-  -o /dev/null && echo "[kibana-rules] Règle 3 créée"
-
+# ── Kibana detection rules (Zeek) ────────────────────────────────────────
+# All 12 rules are defined in kibana-rules-corpus.sh (same directory).
+# Corpus reference: ai/corpus-regles-detection-reseau.md
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bash "$SCRIPT_DIR/kibana-rules-corpus.sh"
