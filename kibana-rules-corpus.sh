@@ -8,9 +8,10 @@
 #   10.10.1.10  = Windows (victim — source of suspicious traffic)
 #   10.10.10.10 = Kali (attacker)
 #
-# JA4 hashes calibrated on this lab (29 June 2026):
-#   t12i1807h1_4b22cbed5bed_2dae41c691ec = curl OpenSSL (Linux, TLS 1.2)
-#   t13i2011h1_2b729b4bf6f3_36bf25f296df = Windows Schannel (TLS 1.3)
+# JA4 threat-intel hashes (source: FoxIO JA4+ database, ja4db.com, verified July 2026):
+#   t13d190900_9dc949149365_97f8aa674fd9 = Sliver C2 (client JA4)
+# NOTE: the lab's own curl/Schannel JA4 hashes are NOT used as detection — they are
+#       legitimate clients. A3 must match known-malicious C2 fingerprints only.
 #
 # Corpus reference: ai/corpus-regles-detection-reseau.md
 # ─────────────────────────────────────────────────────────────────────────
@@ -82,31 +83,33 @@ curl -s -u "$AUTH" \
     "tags": ["Zeek", "TLS", "SNI", "T1071"]
   }' -o /dev/null && echo "[kibana-rules] A2 created: SNI absent"
 
-# A3 — JA4 fingerprint of known tool (MITRE T1071)
+# A3 — JA4 fingerprint of a known C2 framework (MITRE T1573.002)
 # JA4 hashes the TLS ClientHello: protocol, version, ciphers, extensions, ALPN.
 # Unlike JA3, JA4 sorts extensions before hashing — resistant to randomization attacks.
-# These two hashes match Windows Schannel (curl.exe) and curl OpenSSL used in this lab.
-# Suricata ET Open covers known hashes on port 443 only; Zeek covers all ports.
+# This hash is Sliver C2's client JA4 from the FoxIO threat-intel database (ja4db.com).
+# IMPORTANT: we match a KNOWN-MALICIOUS fingerprint, not the lab's legitimate curl/Schannel.
+# Coverage is one framework (Sliver). Cobalt Strike (JA4H/JA4X) and Metasploit (JA4X) need
+# zeek.ssl.ja4h / zeek.ssl.ja4x — verify the Zeek JA4 plugin logs them before adding.
 curl -s -u "$AUTH" \
   -H "kbn-xsrf: true" \
   -H "Content-Type: application/json" \
   "$KIBANA/api/detection_engine/rules" \
   -X POST \
   -d '{
-    "name": "[Zeek] JA4 fingerprint — non-browser tool",
-    "description": "JA4 fingerprint matching Windows Schannel (curl.exe) or curl OpenSSL — not a browser. JA4 is resistant to cipher-order randomization (unlike JA3). Hashes calibrated on this lab.",
-    "rule_id": "zeek-ja4-tool",
+    "name": "[Zeek] JA4 fingerprint — Sliver C2",
+    "description": "TLS ClientHello matching Sliver C2 framework JA4 fingerprint (FoxIO ja4db.com). JA4 is resistant to cipher-order randomization (unlike JA3). Matches a known-malicious framework, not legitimate lab clients. Coverage: Sliver only — Cobalt Strike/Metasploit use JA4X/JA4H (cert/HTTP).",
+    "rule_id": "zeek-ja4-c2",
     "type": "query",
     "language": "kuery",
-    "query": "event.dataset: \"zeek.ssl\" AND source.ip: \"10.10.1.10\" AND zeek.ssl.ja4: (\"t13i2011h1_2b729b4bf6f3_36bf25f296df\" OR \"t12i1807h1_4b22cbed5bed_2dae41c691ec\")",
+    "query": "event.dataset: \"zeek.ssl\" AND source.ip: \"10.10.1.10\" AND zeek.ssl.ja4: \"t13d190900_9dc949149365_97f8aa674fd9\"",
     "index": ["filebeat-*"],
     "severity": "high",
     "risk_score": 80,
     "enabled": true,
     "interval": "1m",
     "from": "now-5m",
-    "tags": ["Zeek", "JA4", "Fingerprint", "T1071"]
-  }' -o /dev/null && echo "[kibana-rules] A3 created: JA4 fingerprint"
+    "tags": ["Zeek", "JA4", "C2", "Sliver", "T1573"]
+  }' -o /dev/null && echo "[kibana-rules] A3 created: JA4 Sliver C2 fingerprint"
 
 # A5 — TLS obsolete version (1.0 or 1.1) (MITRE T1573)
 # TLS 1.0 and 1.1 were deprecated by RFC 8996 (March 2021).
@@ -359,6 +362,33 @@ curl -s -u "$AUTH" \
     "interval": "1m",
     "from": "now-5m",
     "tags": ["Zeek", "LateralMovement", "T1021"]
-  }' -o /dev/null && echo "[kibana-rules] D2 created: lateral movement ports"
+  }'   -o /dev/null && echo "[kibana-rules] D2 created: lateral movement ports"
 
-echo "[kibana-rules] All 12 rules created."
+# D3 — Long TCP connection — persistent C2 session (MITRE T1095)
+# A Meterpreter session, interactive reverse shell, or persistent C2 tunnel keeps a TCP
+# connection open for minutes to hours. Normal HTTP/HTTPS calls last < 5 seconds.
+# event.duration is in nanoseconds: 30000000000 ns = 30 seconds.
+# DISABLED by default — too many FP (Teams, RDP, OneDrive sync, Windows Update).
+# Use as a hunting rule combined with A1 or C3 to reduce noise.
+curl -s -u "$AUTH" \
+  -H "kbn-xsrf: true" \
+  -H "Content-Type: application/json" \
+  "$KIBANA/api/detection_engine/rules" \
+  -X POST \
+  -d '{
+    "name": "[Zeek] Long TCP connection (C2 session)",
+    "description": "TCP connection lasting more than 30 seconds from Windows. Typical of Meterpreter or interactive reverse shell sessions. High FP rate (Teams, RDP, file sync) — use for hunting only, combined with A1 or C3.",
+    "rule_id": "zeek-long-connection",
+    "type": "query",
+    "language": "kuery",
+    "query": "event.dataset: \"zeek.connection\" AND network.transport: \"tcp\" AND NOT destination.ip: \"10.10.1.1\" AND NOT source.ip: \"10.10.1.1\" AND event.duration > 30000000000",
+    "index": ["filebeat-*"],
+    "severity": "medium",
+    "risk_score": 50,
+    "enabled": false,
+    "interval": "1m",
+    "from": "now-5m",
+    "tags": ["Zeek", "C2", "Hunting", "T1095"]
+  }' -o /dev/null && echo "[kibana-rules] D3 created (disabled): long TCP connection"
+
+echo "[kibana-rules] All 13 rules created (D3 disabled — hunting only)."
