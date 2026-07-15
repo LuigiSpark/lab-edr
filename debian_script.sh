@@ -419,6 +419,9 @@ tee /etc/filebeat/modules.d/zeek.yml << 'FBEOF'
   files:
     enabled: true
     var.paths: ["/opt/zeek/logs/current/files.log"]
+  smtp:
+    enabled: true
+    var.paths: ["/opt/zeek/logs/current/smtp.log"]
   weird:
     enabled: true
     var.paths: ["/opt/zeek/logs/current/weird.log"]

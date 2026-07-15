@@ -80,3 +80,12 @@ To list and restore it:
 vagrant snapshot list
 vagrant snapshot restore <name of the vm> (optional)
 ```
+
+## Extra-tools. 
+
+### Cross-compilation : Windows binary on linux. 
+
+The x86_64 version of mingw32 gcc is preinstalled. 
+
+
+

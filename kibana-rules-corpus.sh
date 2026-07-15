@@ -1,20 +1,7 @@
 #!/usr/bin/env bash
-# ── kibana-rules-corpus.sh ────────────────────────────────────────────────
-# All Zeek detection rules for this lab — 12 rules across 5 datasets.
-# Called by debian_script.sh during provisioning.
-#
-# Lab IPs:
-#   10.10.1.1   = Debian (Elastic stack — exclude from most rules)
-#   10.10.1.10  = Windows (victim — source of suspicious traffic)
-#   10.10.10.10 = Kali (attacker)
-#
-# JA4 threat-intel hashes (source: FoxIO JA4+ database, ja4db.com, verified July 2026):
-#   t13d190900_9dc949149365_97f8aa674fd9 = Sliver C2 (client JA4)
-# NOTE: the lab's own curl/Schannel JA4 hashes are NOT used as detection — they are
-#       legitimate clients. A3 must match known-malicious C2 fingerprints only.
-#
-# Corpus reference: ai/corpus-regles-detection-reseau.md
-# ─────────────────────────────────────────────────────────────────────────
+# kibana-rules-corpus.sh — Zeek/Elastic Agent detection rules for this lab, deployed by debian_script.sh during provisioning.
+# Lab IPs: 10.10.1.1 = Debian (Elastic stack), 10.10.1.10 = Windows (victim), 10.10.10.10 = Kali (attacker).
+# Rules are named TLS-1..4, HTTP-1..5, DNS-1..6, TCP-1..3, FILE-1..2, EDR-1 (TCP-4 exists in Kibana but disabled, not in this script).
 
 KIBANA="http://10.10.1.1:5601"
 AUTH="elastic:vagrant"
@@ -30,13 +17,33 @@ done
 echo "[kibana-rules] Creating rules..."
 
 # ════════════════════════════════════════════════════════════════════
-# CATEGORY A — TLS layer (zeek.ssl)
+# TLS — zeek.ssl
 # ════════════════════════════════════════════════════════════════════
 
-# A1 — Self-signed TLS certificate (MITRE T1573)
-# An attacker spinning up a C2 server generates a self-signed cert with openssl in seconds.
-# Excluded: 10.10.1.1 (Elastic stack uses self-signed certs internally).
-# IMPORTANT: only detectable in TLS 1.2 — TLS 1.3 encrypts the certificate in the handshake.
+# TLS-1 - Obsolete TLS version (1.0 / 1.1 / 1.2)
+
+curl -s -u "$AUTH" \
+  -H "kbn-xsrf: true" \
+  -H "Content-Type: application/json" \
+  "$KIBANA/api/detection_engine/rules" \
+  -X POST \
+  -d '{
+    "name": "[Zeek] TLS version 1.2 used",
+    "description": "Detects TLS 1.2 connections on port 443 - modern clients prefer 1.3",
+    "rule_id": "zeek-tls-obsolete-version",
+    "type": "query",
+    "language": "kuery",
+    "query": "event.dataset: \"zeek.ssl\" and source.ip: \"10.10.1.10\" and tls.version: (\"1.0\" or \"1.1\" or \"1.2\") and destination.port: 443",
+    "index": ["filebeat-*"],
+    "severity": "medium",
+    "risk_score": 40,
+    "enabled": true,
+    "interval": "1m",
+    "from": "now-5m"
+  }' -o /dev/null && echo "[kibana-rules] TLS-1 created: obsolete TLS version"
+
+# TLS-2 — TLS connection using a self-signed certificate.
+
 curl -s -u "$AUTH" \
   -H "kbn-xsrf: true" \
   -H "Content-Type: application/json" \
@@ -56,12 +63,10 @@ curl -s -u "$AUTH" \
     "interval": "1m",
     "from": "now-5m",
     "tags": ["Zeek", "TLS", "C2", "T1573"]
-  }' -o /dev/null && echo "[kibana-rules] A1 created: self-signed cert"
+  }' -o /dev/null && echo "[kibana-rules] TLS-2 created: self-signed cert"
 
-# A2 — TLS connection without SNI (MITRE T1071)
-# Every legitimate browser sends SNI in the TLS ClientHello.
-# A malware connecting directly to an IP (no DNS lookup) has no hostname to put in SNI.
-# Works in TLS 1.2 AND TLS 1.3 — SNI is always sent in plaintext before encryption starts.
+# TLS-3 — TLS connection with no SNI (raw IP, no domain).
+
 curl -s -u "$AUTH" \
   -H "kbn-xsrf: true" \
   -H "Content-Type: application/json" \
@@ -73,7 +78,7 @@ curl -s -u "$AUTH" \
     "rule_id": "zeek-no-sni",
     "type": "query",
     "language": "kuery",
-    "query": "event.dataset: \"zeek.ssl\" and not tls.server_name: * and source.ip: \"10.10.1.10\"",
+    "query": "event.dataset: \"zeek.ssl\" and not zeek.ssl.server.name: * and source.ip: \"10.10.1.10\"",
     "index": ["filebeat-*"],
     "severity": "medium",
     "risk_score": 50,
@@ -81,71 +86,37 @@ curl -s -u "$AUTH" \
     "interval": "1m",
     "from": "now-5m",
     "tags": ["Zeek", "TLS", "SNI", "T1071"]
-  }' -o /dev/null && echo "[kibana-rules] A2 created: SNI absent"
+  }' -o /dev/null && echo "[kibana-rules] TLS-3 created: SNI absent"
 
-# A3 — JA4 fingerprint of a known C2 framework (MITRE T1573.002)
-# JA4 hashes the TLS ClientHello: protocol, version, ciphers, extensions, ALPN.
-# Unlike JA3, JA4 sorts extensions before hashing — resistant to randomization attacks.
-# This hash is Sliver C2's client JA4 from the FoxIO threat-intel database (ja4db.com).
-# IMPORTANT: we match a KNOWN-MALICIOUS fingerprint, not the lab's legitimate curl/Schannel.
-# Coverage is one framework (Sliver). Cobalt Strike (JA4H/JA4X) and Metasploit (JA4X) need
-# zeek.ssl.ja4h / zeek.ssl.ja4x — verify the Zeek JA4 plugin logs them before adding.
+# TLS-4 — JA4+JA4S fingerprint for known Sliver C2 (source: ja4db.com).
+
 curl -s -u "$AUTH" \
   -H "kbn-xsrf: true" \
   -H "Content-Type: application/json" \
   "$KIBANA/api/detection_engine/rules" \
   -X POST \
   -d '{
-    "name": "[Zeek] JA4 fingerprint — Sliver C2",
-    "description": "TLS ClientHello matching Sliver C2 framework JA4 fingerprint (FoxIO ja4db.com). JA4 is resistant to cipher-order randomization (unlike JA3). Matches a known-malicious framework, not legitimate lab clients. Coverage: Sliver only — Cobalt Strike/Metasploit use JA4X/JA4H (cert/HTTP).",
-    "rule_id": "zeek-ja4-c2",
+    "name": "[Zeek] JA4+JA4S fingerprint - Sliver C2",
+    "description": "TLS ClientHello (JA4) and ServerHello (JA4S) both match the Sliver C2 default Go TLS stack. Hash validated on ja4db.com / FoxIO ja4plus-mapping.csv (9 July 2026).",
+    "rule_id": "zeek-tls4-ja4-ja4s-sliver",
     "type": "query",
     "language": "kuery",
-    "query": "event.dataset: \"zeek.ssl\" AND source.ip: \"10.10.1.10\" AND zeek.ssl.ja4: \"t13d190900_9dc949149365_97f8aa674fd9\"",
+    "query": "event.dataset: \"zeek.ssl\" and source.ip: \"10.10.1.10\" and zeek.ssl.ja4: \"t13d190900_9dc949149365_97f8aa674fd9\" and zeek.ssl.ja4s: \"t130200_1301_a56c5b993250\"",
     "index": ["filebeat-*"],
     "severity": "high",
-    "risk_score": 80,
+    "risk_score": 73,
     "enabled": true,
     "interval": "1m",
     "from": "now-5m",
-    "tags": ["Zeek", "JA4", "C2", "Sliver", "T1573"]
-  }' -o /dev/null && echo "[kibana-rules] A3 created: JA4 Sliver C2 fingerprint"
-
-# A5 — TLS obsolete version (1.0 or 1.1) (MITRE T1573)
-# TLS 1.0 and 1.1 were deprecated by RFC 8996 (March 2021).
-# All modern clients (Windows 11, Chrome, Edge) have them disabled.
-# A malware compiled against an old OpenSSL or using a minimal custom TLS stack
-# may negotiate TLS 1.0/1.1. Presence from a Windows 11 host is anomalous.
-# Note: unlikely to trigger in this lab — serves as baseline signal documentation.
-curl -s -u "$AUTH" \
-  -H "kbn-xsrf: true" \
-  -H "Content-Type: application/json" \
-  "$KIBANA/api/detection_engine/rules" \
-  -X POST \
-  -d '{
-    "name": "[Zeek] TLS obsolete version (1.0 or 1.1)",
-    "description": "TLS 1.0 and 1.1 are deprecated by RFC 8996 (2021). A Windows 11 host negotiating these versions indicates a legacy-compiled implant or custom TLS stack.",
-    "rule_id": "zeek-tls-legacy",
-    "type": "query",
-    "language": "kuery",
-    "query": "event.dataset: \"zeek.ssl\" AND source.ip: \"10.10.1.10\" AND tls.version: (\"1.0\" OR \"1.1\")",
-    "index": ["filebeat-*"],
-    "severity": "medium",
-    "risk_score": 40,
-    "enabled": true,
-    "interval": "1m",
-    "from": "now-5m",
-    "tags": ["Zeek", "TLS", "T1573"]
-  }' -o /dev/null && echo "[kibana-rules] A5 created: TLS legacy version"
+    "tags": ["Zeek", "TLS", "JA4", "C2", "T1573"]
+  }' -o /dev/null && echo "[kibana-rules] TLS-4 created: JA4+JA4S Sliver"
 
 # ════════════════════════════════════════════════════════════════════
-# CATEGORY B — HTTP layer (zeek.http)
+# HTTP — zeek.http
 # ════════════════════════════════════════════════════════════════════
 
-# B1 — HTTP request without Host header (MITRE T1071)
-# HTTP/1.1 mandates the Host header (RFC 7230). Every browser and HTTP library sends it.
-# A raw-socket C2 or primitive reverse shell using HTTP/1.0 may omit it.
-# Near-zero false positives — any framework omitting it is either broken or custom-built.
+# HTTP-1 — HTTP request with no Host header.
+
 curl -s -u "$AUTH" \
   -H "kbn-xsrf: true" \
   -H "Content-Type: application/json" \
@@ -157,7 +128,7 @@ curl -s -u "$AUTH" \
     "rule_id": "zeek-no-host-header",
     "type": "query",
     "language": "kuery",
-    "query": "event.dataset: \"zeek.http\" AND source.ip: \"10.10.1.10\" AND NOT zeek.http.host: *",
+    "query": "event.dataset: \"zeek.http\" and source.ip: \"10.10.1.10\" and not url.domain: *",
     "index": ["filebeat-*"],
     "severity": "medium",
     "risk_score": 65,
@@ -165,14 +136,10 @@ curl -s -u "$AUTH" \
     "interval": "1m",
     "from": "now-5m",
     "tags": ["Zeek", "HTTP", "C2", "T1071"]
-  }' -o /dev/null && echo "[kibana-rules] B1 created: HTTP no Host header"
+  }' -o /dev/null && echo "[kibana-rules] HTTP-1 created: HTTP no Host header"
 
-# B2 — HTTP User-Agent non-browser (MITRE T1071)
-# Metasploit meterpreter/reverse_http uses "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1)"
-# by default — IE6 on Windows XP, in 2026. Cobalt Strike default: MSIE 9.0 on Windows 7.
-# The whitelist covers browsers and legitimate Windows/Elastic agents.
-# ECS field: user_agent.original (NOT zeek.http.user_agent which is not indexed).
-# Limit: configured C2 (Malleable C2, Sliver HTTP profile) can spoof a Chrome UA.
+# HTTP-2 — User-Agent that is not a real browser.
+
 curl -s -u "$AUTH" \
   -H "kbn-xsrf: true" \
   -H "Content-Type: application/json" \
@@ -180,11 +147,11 @@ curl -s -u "$AUTH" \
   -X POST \
   -d '{
     "name": "[Zeek] HTTP User-Agent non-browser",
-    "description": "HTTP request from Windows with a User-Agent that is not a browser. Metasploit default: MSIE 6.0 on Windows XP. Cobalt Strike default: MSIE 9.0. FP: curl, PowerShell, enterprise agents.",
-    "rule_id": "zeek-useragent",
+    "description": "HTTP request from Windows with a User-Agent that does not contain a modern browser token (Chrome/, Edg/, Firefox/, Safari/) nor a known Windows update agent string. Catches unconfigured C2 default UAs (Meterpreter reverse_http default is IE6-on-XP) and bare HTTP clients.",
+    "rule_id": "zeek-http-nonbrowser-ua",
     "type": "query",
     "language": "kuery",
-    "query": "event.dataset: \"zeek.http\" AND source.ip: \"10.10.1.10\" AND user_agent.original: * AND NOT user_agent.original: (*Mozilla* OR *Chrome* OR *Edge* OR *Windows-Update-Agent* OR *Microsoft-Delivery-Optimization* OR *Elastic*)",
+    "query": "event.dataset: \"zeek.http\" and source.ip: \"10.10.1.10\" and user_agent.original: * and not user_agent.original: (*Chrome/* or *Edg/* or *Firefox/* or *Safari/* or *Windows-Update-Agent* or *Microsoft-Delivery-Optimization*)",
     "index": ["filebeat-*"],
     "severity": "medium",
     "risk_score": 55,
@@ -192,43 +159,107 @@ curl -s -u "$AUTH" \
     "interval": "1m",
     "from": "now-5m",
     "tags": ["Zeek", "HTTP", "C2", "T1071"]
-  }' -o /dev/null && echo "[kibana-rules] B2 created: User-Agent non-browser"
+  }' -o /dev/null && echo "[kibana-rules] HTTP-2 created: User-Agent non-browser"
 
-# B3 — HTTP POST with large body (MITRE T1048.003)
-# Legitimate HTTP POSTs from endpoints rarely exceed 100 KB.
-# File exfiltration or secrets encoded in base64 can easily exceed this threshold.
-# Only detectable in cleartext HTTP — HTTPS body is encrypted and invisible to Zeek.
-# New field: zeek.http.request_body_len = size in bytes of the HTTP request body.
+# HTTP-2-bis — known C2 User-Agent exact-match blacklist (source: SigmaHQ proxy_ua_frameworks.yml).
+
 curl -s -u "$AUTH" \
   -H "kbn-xsrf: true" \
   -H "Content-Type: application/json" \
   "$KIBANA/api/detection_engine/rules" \
   -X POST \
   -d '{
-    "name": "[Zeek] HTTP POST large body (potential exfiltration)",
-    "description": "HTTP POST with body > 100 KB from Windows. Legitimate endpoints rarely send that volume. Possible file or secret exfiltration. Only detectable on cleartext HTTP — HTTPS body is encrypted.",
-    "rule_id": "zeek-http-post-large",
+    "name": "[Zeek] Known signatures of C2 User Agent.",
+    "description": "Exact-match blacklist of known default C2 User-Agent strings (Metasploit, Cobalt Strike, Havoc)",
+    "rule_id": "zeek-http-blacklist-user-agent",
     "type": "query",
     "language": "kuery",
-    "query": "event.dataset: \"zeek.http\" AND source.ip: \"10.10.1.10\" AND http.request.method: \"POST\" AND zeek.http.request_body_len > 100000",
+    "query": "event.dataset: \"zeek.http\" and source.ip: \"10.10.1.10\" and user_agent.original: (\"Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1; InfoPath.2)\" or \"Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1)\" or \"Mozilla/4.0 (compatible; Metasploit RSPEC)\" or \"Mozilla/5.0\" or \"Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; WOW64; Trident/5.0; MAAU)\" or \"Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36\")",
+    "index": ["filebeat-*"],
+    "severity": "high",
+    "risk_score": 75,
+    "enabled": true,
+    "interval": "5m",
+    "from": "now-6m",
+    "tags": ["Zeek", "User Agent", "C2", "T1071"]
+  }' -o /dev/null && echo "[kibana-rules] HTTP-2-bis created: C2 User-Agent blacklist"
+
+# HTTP-3 — 3+ big HTTP POST bodies to the same destination (Threshold).
+
+curl -s -u "$AUTH" \
+  -H "kbn-xsrf: true" \
+  -H "Content-Type: application/json" \
+  "$KIBANA/api/detection_engine/rules" \
+  -X POST \
+  -d '{
+    "name": "[Zeek] Threshold — POST HTTP large body (exfiltration by chunking)",
+    "description": "HTTP POST with body over 100KB to same destination in 5 min. Detects chunked exfiltration over cleartext HTTP.",
+    "rule_id": "zeek-threshold-http-post-exfil",
+    "type": "threshold",
+    "language": "kuery",
+    "query": "event.dataset: \"zeek.http\" AND source.ip: \"10.10.1.10\" AND http.request.method: \"POST\" AND http.request.body.bytes > 100000",
+    "threshold": {
+      "field": ["destination.ip"],
+      "value": 3
+    },
     "index": ["filebeat-*"],
     "severity": "medium",
     "risk_score": 60,
     "enabled": true,
+    "interval": "5m",
+    "from": "now-6m",
+    "tags": ["Zeek", "HTTP", "Exfiltration", "T1041"]
+  }' -o /dev/null && echo "[kibana-rules] HTTP-3 created: threshold POST large body"
+
+# HTTP-4 (P3) — a single HTTP CONNECT to an external IP is enough to flag tunneling or proxy discovery.
+curl -s -u "$AUTH" \
+  -H "kbn-xsrf: true" \
+  -H "Content-Type: application/json" \
+  "$KIBANA/api/detection_engine/rules" \
+  -X POST \
+  -d '{
+    "name": "[Zeek] HTTP CONNECT to external IP (tunneling / proxy discovery)",
+    "description": "Single HTTP CONNECT to external IP. Two scenarios: (1) proxy-aware implant discovering egress path — one CONNECT is enough to detect the probe. (2) active tunnel (Chisel, Ligolo-ng) — also a single CONNECT, followed by an opaque TCP stream. No threshold needed: in a lab with no configured proxy, any CONNECT to an external IP is anomalous.",
+    "rule_id": "zeek-http-connect-external",
+    "type": "query",
+    "language": "kuery",
+    "query": "event.dataset: \"zeek.http\" and source.ip: \"10.10.1.10\" and http.request.method: \"CONNECT\"",
+    "index": ["filebeat-*"],
+    "severity": "high",
+    "risk_score": 73,
+    "enabled": true,
     "interval": "1m",
-    "from": "now-5m",
-    "tags": ["Zeek", "HTTP", "Exfiltration", "T1048"]
-  }' -o /dev/null && echo "[kibana-rules] B3 created: HTTP POST large body"
+    "from": "now-2m",
+    "tags": ["Zeek", "HTTP", "Tunnel", "T1572", "T1090"]
+  }' -o /dev/null && echo "[kibana-rules] HTTP-4 created: HTTP CONNECT external IP"
+
+# HTTP-5 (P1) — a TLS connection with no SNI followed by a large data transfer (EQL sequence).
+curl -s -u "$AUTH" \
+  -H "kbn-xsrf: true" \
+  -H "Content-Type: application/json" \
+  "$KIBANA/api/detection_engine/rules" \
+  -X POST \
+  -d '{
+    "name": "[Zeek] EQL — Exfiltration HTTPS toward raw IP (no-SNI + volume)",
+    "description": "TLS connection to raw IP (no SNI) followed by at least 1MB outbound on the same socket",
+    "rule_id": "zeek-eql-https-exfil-nosni",
+    "type": "eql",
+    "language": "eql",
+    "query": "sequence by source.ip, destination.ip, destination.port with maxspan=5m\n  [any where event.dataset == \"zeek.ssl\" and zeek.ssl.server.name == null and source.ip == \"10.10.1.10\"]\n  [any where event.dataset == \"zeek.connection\" and source.bytes > 1000000 and source.ip == \"10.10.1.10\"]",
+    "index": ["filebeat-*"],
+    "severity": "high",
+    "risk_score": 80,
+    "enabled": true,
+    "interval": "5m",
+    "from": "now-6m",
+    "tags": ["Zeek", "EQL", "Exfiltration", "T1041", "T1573"]
+  }' -o /dev/null && echo "[kibana-rules] HTTP-5 created: EQL HTTPS exfil no-SNI"
 
 # ════════════════════════════════════════════════════════════════════
-# CATEGORY C — DNS layer (zeek.dns)
+# DNS — zeek.dns
 # ════════════════════════════════════════════════════════════════════
 
-# C1 — DNS TXT query from endpoint (MITRE T1071.004, T1048.003)
-# TXT records carry arbitrary text — used by mail servers for SPF/DKIM/DMARC.
-# A Windows workstation never makes TXT queries in normal usage (mail server job).
-# Tools like dnscat2 encode C2 commands in DNS TXT responses, tunneling over port 53
-# which passes through most firewalls that block 80/443.
+# DNS-1 — DNS TXT query from a Windows workstation.
 curl -s -u "$AUTH" \
   -H "kbn-xsrf: true" \
   -H "Content-Type: application/json" \
@@ -240,7 +271,7 @@ curl -s -u "$AUTH" \
     "rule_id": "zeek-dns-txt",
     "type": "query",
     "language": "kuery",
-    "query": "event.dataset: \"zeek.dns\" AND source.ip: \"10.10.1.10\" AND dns.question.type: \"TXT\"",
+    "query": "event.dataset: \"zeek.dns\" and source.ip: \"10.10.1.10\" and dns.question.type: \"TXT\"",
     "index": ["filebeat-*"],
     "severity": "medium",
     "risk_score": 50,
@@ -248,74 +279,138 @@ curl -s -u "$AUTH" \
     "interval": "1m",
     "from": "now-5m",
     "tags": ["Zeek", "DNS", "C2", "T1071", "T1048"]
-  }' -o /dev/null && echo "[kibana-rules] C1 created: DNS TXT"
+  }' -o /dev/null && echo "[kibana-rules] DNS-1 created: DNS TXT"
 
-# C2 — NXDomain burst — DGA indicator (MITRE T1568.002)
-# DGA malware generates hundreds of candidate domain names algorithmically and queries them
-# until one resolves. Conficker (2008): up to 250 candidates/day.
-# A legitimate user never produces 20+ NXDOMAINs in 5 minutes.
-# Threshold rule — fires when the same source IP hits 20 NXDOMAINs in 5 minutes.
-# Note: only visible to Zeek if DNS goes through eth2 (toward Kali), not to local resolver.
+# DNS-2 — DNS query sent to a resolver that is not the official one.
+
 curl -s -u "$AUTH" \
   -H "kbn-xsrf: true" \
   -H "Content-Type: application/json" \
   "$KIBANA/api/detection_engine/rules" \
   -X POST \
   -d '{
-    "name": "[Zeek] NXDomain burst — DGA indicator",
-    "description": "More than 20 NXDOMAIN DNS responses from Windows in 5 minutes. Characteristic of Domain Generation Algorithm (DGA) malware probing for active C2 domains.",
-    "rule_id": "zeek-nxdomain-burst",
+    "name": "[Zeek] DNS direct resolution",
+    "description": "Alert if a DNS resolution is made directly by the victim instead of using the configured resolver.",
+    "rule_id": "zeek-dns-direct-resolution",
+    "type": "query",
+    "language": "kuery",
+    "query": "event.dataset: \"zeek.dns\" and source.ip: \"10.10.1.10\" and not destination.ip: \"10.10.1.1\"",
+    "index": ["filebeat-*"],
+    "severity": "high",
+    "risk_score": 65,
+    "enabled": true,
+    "interval": "1m",
+    "from": "now-5m"
+  }' -o /dev/null && echo "[kibana-rules] DNS-2 created: DNS direct resolution"
+
+# DNS-3 — 20+ NXDOMAIN answers in 5 minutes (DGA malware, Threshold).
+
+curl -s -u "$AUTH" \
+  -H "kbn-xsrf: true" \
+  -H "Content-Type: application/json" \
+  "$KIBANA/api/detection_engine/rules" \
+  -X POST \
+  -d '{
+    "name": "[Zeek] Threshold — DNS NXDOMAIN burst T1568",
+    "description": "The malware generates a lot of DNS requests to find the domain name used by its master.",
+    "rule_id": "zeek-threshold-dns-nxdomain",
     "type": "threshold",
     "language": "kuery",
     "query": "event.dataset: \"zeek.dns\" AND source.ip: \"10.10.1.10\" AND zeek.dns.rcode_name: \"NXDOMAIN\"",
+    "threshold": {
+      "field": ["source.ip"],
+      "value": 20
+    },
     "index": ["filebeat-*"],
     "severity": "high",
     "risk_score": 60,
     "enabled": true,
-    "interval": "5m",
-    "from": "now-6m",
-    "threshold": {
-      "field": ["source.ip"],
-      "value": 20,
-      "cardinality": []
-    },
-    "tags": ["Zeek", "DNS", "DGA", "T1568"]
-  }' -o /dev/null && echo "[kibana-rules] C2 created: NXDomain burst"
+    "interval": "1m",
+    "from": "now-5m",
+    "tags": ["Zeek", "DNS", "T1568", "NXDOMAIN"]
+  }' -o /dev/null && echo "[kibana-rules] DNS-3 created: threshold DNS NXDOMAIN burst"
 
-# C3 — DNS query to unauthorized resolver (MITRE T1071.004)
-# In enterprise environments, all DNS must go through the internal resolver (10.10.1.1).
-# An attacker using DNS tunneling configures the implant to query their own DNS server
-# directly — bypassing the internal resolver and its blocklist.
-# Note: does not catch DNS over HTTPS (DoH) which uses port 443, invisible in zeek.dns.
+# DNS-4 — one very long DNS subdomain name (EQL).
+
 curl -s -u "$AUTH" \
   -H "kbn-xsrf: true" \
   -H "Content-Type: application/json" \
   "$KIBANA/api/detection_engine/rules" \
   -X POST \
   -d '{
-    "name": "[Zeek] DNS to unauthorized resolver",
-    "description": "DNS query from Windows to an IP other than the internal resolver (10.10.1.1). Indicates DNS tunneling or C2 using an attacker-controlled DNS server. Does not detect DoH (port 443).",
-    "rule_id": "zeek-dns-unauth-resolver",
-    "type": "query",
-    "language": "kuery",
-    "query": "event.dataset: \"zeek.dns\" AND source.ip: \"10.10.1.10\" AND NOT destination.ip: \"10.10.1.1\"",
+    "name": "[Zeek] DNS long subdomain (exfiltration)",
+    "description": "DNS query name > 50 chars from Windows. Exfiltration tools encode data in subdomain names regardless of record type. Covers DNS-1 blind spot on A/AAAA/CNAME records.",
+    "rule_id": "zeek-dns-long-subdomain",
+    "type": "eql",
+    "language": "eql",
+    "query": "any where event.dataset == \"zeek.dns\" and source.ip == \"10.10.1.10\" and length(dns.question.name) > 50",
     "index": ["filebeat-*"],
     "severity": "medium",
-    "risk_score": 45,
+    "risk_score": 55,
     "enabled": true,
     "interval": "1m",
     "from": "now-5m",
-    "tags": ["Zeek", "DNS", "C2", "T1071"]
-  }' -o /dev/null && echo "[kibana-rules] C3 created: DNS unauthorized resolver"
+    "tags": ["Zeek", "DNS", "Exfiltration", "T1071", "T1048"]
+  }' -o /dev/null && echo "[kibana-rules] DNS-4 created: DNS long subdomain"
+
+# DNS-5 — many different subdomains under the same domain (Threshold + cardinality).
+curl -s -u "$AUTH" \
+  -H "kbn-xsrf: true" \
+  -H "Content-Type: application/json" \
+  "$KIBANA/api/detection_engine/rules" \
+  -X POST \
+  -d '{
+    "name": "[Zeek] Threshold — DNS important number of subdomain associated with a domain.",
+    "description": "To encode traffic in subdomain implies numerous subdomain register under a domaine name — T1071",
+    "rule_id": "zeek-threshold-dns-subdomain-cardinality",
+    "type": "threshold",
+    "language": "kuery",
+    "query": "event.dataset: \"zeek.dns\" AND source.ip: \"10.10.1.10\" AND dns.question.registered_domain: *",
+    "threshold": {
+      "field": ["source.ip"],
+      "value": 15
+    },
+    "index": ["filebeat-*"],
+    "severity": "high",
+    "risk_score": 60,
+    "enabled": true,
+    "interval": "1m",
+    "from": "now-5m",
+    "tags": ["Zeek", "DNS", "T1071", "subdomain"]
+  }' -o /dev/null && echo "[kibana-rules] DNS-5 created: threshold DNS subdomain cardinality"
+
+# DNS-6 — same subdomain queried 10+ times with TTL=0 answers (Threshold, heartbeat/beaconing).
+
+curl -s -u "$AUTH" \
+  -H "kbn-xsrf: true" \
+  -H "Content-Type: application/json" \
+  "$KIBANA/api/detection_engine/rules" \
+  -X POST \
+  -d '{
+    "name": "[Zeek] Threshold — DNS TTL=0 heartbeat (same subdomain)",
+    "description": "Same DNS name queried 10+ times with TTL=0 answers from the same source. TTL=0 forces cache bypass — required by C2 implants (Sliver, DNScale) so every heartbeat traverses the full resolution path. Low FP: legitimate TTL=0 (CDN failover) never repeats the same hostname this many times in minutes.",
+    "rule_id": "zeek-threshold-dns-ttl-zero",
+    "type": "threshold",
+    "language": "kuery",
+    "query": "event.dataset: \"zeek.dns\" AND source.ip: \"10.10.1.10\" AND dns.answers.ttl: 0",
+    "threshold": {
+      "field": ["source.ip", "dns.question.name"],
+      "value": 10
+    },
+    "index": ["filebeat-*"],
+    "severity": "medium",
+    "risk_score": 55,
+    "enabled": true,
+    "interval": "1m",
+    "from": "now-6m",
+    "tags": ["Zeek", "DNS", "T1071", "TTL", "Heartbeat"]
+  }' -o /dev/null && echo "[kibana-rules] DNS-6 created: threshold DNS TTL=0 heartbeat"
 
 # ════════════════════════════════════════════════════════════════════
-# CATEGORY D — Transport layer (zeek.connection)
+# TCP / Transport — zeek.connection
 # ════════════════════════════════════════════════════════════════════
 
-# D1 — Non-standard TCP port (MITRE T1571)
-# Reverse shells and C2 frameworks use custom ports (e.g. 4444, 9001) to bypass firewall rules.
-# Whitelist: DNS(53), HTTP(80), NTP(123), HTTPS(443), SMB(445),
-#            RDP(3389), Kibana(5601), proxy(8080), Fleet(8220), Elasticsearch(9200).
+# TCP-1 — TCP connection using a non-standard port.
 curl -s -u "$AUTH" \
   -H "kbn-xsrf: true" \
   -H "Content-Type: application/json" \
@@ -335,60 +430,118 @@ curl -s -u "$AUTH" \
     "interval": "1m",
     "from": "now-5m",
     "tags": ["Zeek", "C2", "T1571"]
-  }' -o /dev/null && echo "[kibana-rules] D1 created: non-standard port"
+  }' -o /dev/null && echo "[kibana-rules] TCP-1 created: non-standard port"
 
-# D2 — Lateral movement ports from Windows (MITRE T1021)
-# SMB (445), DCOM endpoint mapper (135), WinRM (5985/5986), RDP (3389).
-# These are the four dominant lateral movement vectors in Windows environments.
-# Windows should never initiate SMB or WinRM toward Kali (10.10.10.x).
-# Excludes 10.10.1.1 (internal server — SMB/RDP to it may be legitimate).
-# Gap vs CrowdStrike: Falcon additionally correlates the process that opened the socket.
+# TCP-2 — connection to a Tor port (9001 / 9030 / 9050).
+
 curl -s -u "$AUTH" \
   -H "kbn-xsrf: true" \
   -H "Content-Type: application/json" \
   "$KIBANA/api/detection_engine/rules" \
   -X POST \
   -d '{
-    "name": "[Zeek] Lateral movement ports from Windows",
-    "description": "Windows initiating connection on SMB (445), DCOM (135), WinRM (5985/5986) or RDP (3389) toward an unexpected host. Typical post-compromise pivot attempt.",
-    "rule_id": "zeek-lateral-movement",
+    "name": "[Zeek] TOR connection",
+    "description": "Detect if a connection to a tor server node (9001, 9030) or to a tor client (9050).",
+    "rule_id": "zeek-tcp-tor-port",
     "type": "query",
     "language": "kuery",
-    "query": "event.dataset: \"zeek.connection\" AND source.ip: \"10.10.1.10\" AND destination.port: (445 OR 135 OR 5985 OR 5986 OR 3389) AND NOT destination.ip: \"10.10.1.1\"",
+    "query": "event.dataset: \"zeek.connection\" and source.ip: \"10.10.1.10\" and network.transport: \"tcp\" and destination.port: (9001 or 9030 or 9050)",
     "index": ["filebeat-*"],
     "severity": "high",
     "risk_score": 75,
     "enabled": true,
     "interval": "1m",
-    "from": "now-5m",
-    "tags": ["Zeek", "LateralMovement", "T1021"]
-  }'   -o /dev/null && echo "[kibana-rules] D2 created: lateral movement ports"
+    "from": "now-2m"
+  }' -o /dev/null && echo "[kibana-rules] TCP-2 created: TOR connection"
 
-# D3 — Long TCP connection — persistent C2 session (MITRE T1095)
-# A Meterpreter session, interactive reverse shell, or persistent C2 tunnel keeps a TCP
-# connection open for minutes to hours. Normal HTTP/HTTPS calls last < 5 seconds.
-# event.duration is in nanoseconds: 30000000000 ns = 30 seconds.
-# DISABLED by default — too many FP (Teams, RDP, OneDrive sync, Windows Update).
-# Use as a hunting rule combined with A1 or C3 to reduce noise.
+# TCP-3 — connection to a lateral movement port (SMB / WinRM / RDP).
+
 curl -s -u "$AUTH" \
   -H "kbn-xsrf: true" \
   -H "Content-Type: application/json" \
   "$KIBANA/api/detection_engine/rules" \
   -X POST \
   -d '{
-    "name": "[Zeek] Long TCP connection (C2 session)",
-    "description": "TCP connection lasting more than 30 seconds from Windows. Typical of Meterpreter or interactive reverse shell sessions. High FP rate (Teams, RDP, file sync) — use for hunting only, combined with A1 or C3.",
-    "rule_id": "zeek-long-connection",
-    "type": "query",
-    "language": "kuery",
-    "query": "event.dataset: \"zeek.connection\" AND network.transport: \"tcp\" AND NOT destination.ip: \"10.10.1.1\" AND NOT source.ip: \"10.10.1.1\" AND event.duration > 30000000000",
-    "index": ["filebeat-*"],
-    "severity": "medium",
-    "risk_score": 50,
-    "enabled": false,
+    "name": "[Agent] EQL - Lateral movement ports (unsigned process)",
+    "description": "Detect lateral movement from non-legitimate process on ports 445, 135, 3389, 5985, 5986. Correlates process start (unsigned, non-system) to outbound network event via process.entity_id.",
+    "rule_id": "agent-eql-lateral-movement-ports",
+    "type": "eql",
+    "language": "eql",
+    "query": "sequence by process.entity_id with maxspan=1m\n  [process where host.os.type == \"windows\" and event.type == \"start\"\n   and process.pid != 4\n   and not user.id in (\"S-1-5-19\", \"S-1-5-20\")\n   and not (process.code_signature.trusted == true\n            and startsWith(process.code_signature.subject_name, \"Microsoft\"))]\n  [network where host.os.type == \"windows\"\n   and destination.port in (445, 135, 3389, 5985, 5986)\n   and process.pid != 4]",
+    "index": ["logs-endpoint.events.process-*", "logs-endpoint.events.network-*"],
+    "severity": "high",
+    "risk_score": 70,
+    "enabled": true,
     "interval": "1m",
     "from": "now-5m",
-    "tags": ["Zeek", "C2", "Hunting", "T1095"]
-  }' -o /dev/null && echo "[kibana-rules] D3 created (disabled): long TCP connection"
+    "tags": ["Agent", "EQL", "LateralMovement", "T1021"]
+  }' -o /dev/null && echo "[kibana-rules] TCP-3 created: EQL lateral movement ports"
 
-echo "[kibana-rules] All 13 rules created (D3 disabled — hunting only)."
+# FILE-1 (T1105) — a PE executable download detected over HTTP by magic bytes.
+curl -s -u "$AUTH" \
+  -H "kbn-xsrf: true" \
+  -H "Content-Type: application/json" \
+  "$KIBANA/api/detection_engine/rules" \
+  -X POST \
+  -d '{
+    "name": "[Zeek] PE executable download over HTTP",
+    "description": "PE32 file (application/x-dosexec) downloaded by Windows over cleartext HTTP. Zeek identifies from magic bytes. Indicates stage-2 payload delivery (T1105). Blind on HTTPS.",
+    "rule_id": "zeek-pe-download-http",
+    "type": "query",
+    "language": "kuery",
+    "query": "event.dataset: \"zeek.files\" and zeek.files.mime_type: \"application/x-dosexec\" and zeek.files.id.orig_h: \"10.10.1.10\" and zeek.files.source: \"HTTP\"",
+    "index": ["filebeat-*"],
+    "severity": "high",
+    "risk_score": 80,
+    "enabled": true,
+    "interval": "1m",
+    "from": "now-5m",
+    "tags": ["Zeek", "T1105", "Payload", "PE"]
+  }' -o /dev/null && echo "[kibana-rules] T1105 created: PE download over HTTP"
+
+# FILE-2 (E4) — a direct SMTP connection from a Windows endpoint
+curl -s -u "$AUTH" \
+  -H "kbn-xsrf: true" \
+  -H "Content-Type: application/json" \
+  "$KIBANA/api/detection_engine/rules" \
+  -X POST \
+  -d '{
+    "name": "[Zeek] SMTP from endpoint (T1071.003)",
+    "description": "Direct SMTP connection from a Windows endpoint. Normal workstations route mail through Exchange. Indicates email-based exfiltration or C2.",
+    "rule_id": "zeek-smtp-from-endpoint",
+    "type": "query",
+    "language": "kuery",
+    "query": "event.dataset: \"zeek.smtp\" and source.ip: \"10.10.1.10\"",
+    "index": ["filebeat-*"],
+    "severity": "high",
+    "risk_score": 70,
+    "enabled": true,
+    "interval": "1m",
+    "from": "now-5m",
+    "tags": ["Zeek", "SMTP", "Exfiltration", "T1071"]
+  }' -o /dev/null && echo "[kibana-rules] FILE-2 created: SMTP from endpoint"
+
+# EDR-1 — LOLBins open a network connection.
+
+curl -s -u "$AUTH" \
+  -H "kbn-xsrf: true" \
+  -H "Content-Type: application/json" \
+  "$KIBANA/api/detection_engine/rules" \
+  -X POST \
+  -d '{
+    "name": "[Agent] EQL - LOLBin outbound network connection",
+    "description": "A Windows LOLBin (curl, certutil, mshta, regsvr32...) started and opened an outbound network connection within 2 minutes. Correlates process.entity_id across Elastic Defend process and network events. Near-zero FP on non-admin workstations.",
+    "rule_id": "community-lolbin-outbound-network",
+    "type": "eql",
+    "language": "eql",
+    "query": "sequence by host.id, process.entity_id with maxspan=2m\n  [process where host.os.type == \"windows\" and event.type == \"start\"\n   and process.name : (\"powershell.exe\",\"pwsh.exe\",\"cmd.exe\",\"wscript.exe\",\"cscript.exe\",\"mshta.exe\",\"rundll32.exe\",\"regsvr32.exe\",\"cmstp.exe\",\"certutil.exe\",\"bitsadmin.exe\",\"curl.exe\",\"xwizard.exe\")]\n  [network where host.os.type == \"windows\"\n   and event.action : \"connection_attempted\"\n   and destination.ip != \"127.0.0.1\"]",
+    "index": ["logs-endpoint.events.process-*", "logs-endpoint.events.network-*"],
+    "severity": "high",
+    "risk_score": 73,
+    "enabled": true,
+    "interval": "1m",
+    "from": "now-5m",
+    "tags": ["Agent", "EQL", "LOLBin", "T1059"]
+  }' -o /dev/null && echo "[kibana-rules] EDR-1 created: LOLBin outbound network"
+
+echo "[kibana-rules] Done."

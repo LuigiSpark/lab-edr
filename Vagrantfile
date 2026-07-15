@@ -63,6 +63,14 @@ Vagrant.configure("2") do |config|
 			vb.cpus = 2
 		end 
 
+		machine.vm.provision "file",
+			source: "integration/send-malware.sh",
+			destination: "/tmp/send-malware.sh"
+
+		machine.vm.provision "file",
+			source: "integration/watch_and_transfer.sh",
+			destination: "/tmp/watch_and_transfer.sh"
+
 		machine.vm.provision "shell", path: "kali_script.sh"
 	end
 end		

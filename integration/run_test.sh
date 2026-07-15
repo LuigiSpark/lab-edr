@@ -19,8 +19,6 @@ set -euo pipefail
 PAYLOAD_NAME="meterpreter.exe"
 KALI_IP="10.10.10.10"
 LPORT=4444
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
 
 echo "[1/5] Checking msfvenom is available on Kali..."
 vagrant ssh kali -- "which msfvenom" || {
@@ -39,17 +37,10 @@ echo "[3/5] Starting TCP listener on Kali (port ${LPORT})..."
 vagrant ssh kali -- "nohup nc -lvnp ${LPORT} > /tmp/nc_session.log 2>&1 &"
 echo "  Listener started (nc -lvnp ${LPORT})"
 
-echo "[4/5] Copying payload from Kali to host, then uploading to Windows..."
-# Fetch the binary from Kali via Vagrant's SSH wrapper
-SSH_PORT=$(vagrant port kali --guest 22 2>/dev/null | tr -d '[:space:]' || echo "2222")
-SSH_KEY=".vagrant/machines/kali/virtualbox/private_key"
-scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -P "${SSH_PORT}" -i "${SSH_KEY}" \
-    vagrant@127.0.0.1:/tmp/${PAYLOAD_NAME} "${TMP}/${PAYLOAD_NAME}"
-
-vagrant upload "${TMP}/${PAYLOAD_NAME}" "C:\\lab\\submissions\\${PAYLOAD_NAME}" windows
-echo "  Uploaded to C:\\lab\\submissions\\${PAYLOAD_NAME}"
-echo "  collect_alerts.py will pick it up automatically."
+echo "[4/5] Transferring payload from Kali to Windows via SMB..."
+# send-malware.sh uses smbclient to push directly to C:\lab\submissions\
+# (replaces vagrant upload which produces 0-byte files for binaries)
+vagrant ssh kali -- "/usr/local/bin/send-malware.sh /tmp/${PAYLOAD_NAME}"
 
 echo "[5/5] Waiting for report (max 3 min)..."
 REPORT_PATH="C:\\lab\\results\\${PAYLOAD_NAME%.exe}_logs.json"

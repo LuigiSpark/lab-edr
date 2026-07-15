@@ -1,8 +1,22 @@
 # ── Sécurité Windows ──────────────────────────────────────────────────────
-# Désactive Defender et le pare-feu (VM de lab isolée)
+# Désactive le pare-feu (VM de lab isolée). Defender est différent : DisableRealtimeMonitoring
+# ne fonctionne pas sur cette image -- bloqué par la Protection contre les falsifications
+# (Tamper Protection), activée par défaut et non désactivable en PowerShell (testé en lab le
+# 10 juillet 2026 : RealTimeProtectionEnabled reste True après l'appel). L'exclusion de dossier
+# fonctionne, elle -- validé avec un vrai fichier EICAR : survit dans un dossier exclu, mis en
+# quarantaine en quelques secondes sinon (confirmé par Get-MpThreatDetection). Posée avant toute
+# écriture dans ces dossiers pour que rien n'y soit scanné.
 
 Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope LocalMachine
-Set-MpPreference -DisableRealtimeMonitoring $true
+Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+
+# ── WinRM TrustedHosts ────────────────────────────────────────────────────
+# Autorise Kali (10.10.10.10) à se connecter via WinRM pour les transferts SMB.
+# Nécessaire même si le transfert passe par SMB : WinRM TrustedHosts conditionne
+# aussi la résolution NTLM depuis les hôtes non domaine.
+Set-Item WSMan:\localhost\Client\TrustedHosts -Value "10.10.10.10" -Force
+Add-MpPreference -ExclusionPath C:\lab
+Add-MpPreference -ExclusionPath C:\Users\vagrant\lab
 
 # ── Réseau ────────────────────────────────────────────────────────────────
 # Ajoute une route vers le réseau attaquant (10.10.10.0) via la Debian
